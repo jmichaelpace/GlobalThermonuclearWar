@@ -19,13 +19,45 @@ A ballistic missile defense simulation built with Rust and egui. Visualize missi
 - Rust 1.70+ (Edition 2021)
 - macOS (currently targeting Apple Silicon)
 
-## Building
+## Installation
 
-### Install Dependencies
+### Install Rust
+
+If you don't have Rust installed, install it using rustup:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Follow the on-screen instructions, then restart your terminal or run:
+
+```bash
+source $HOME/.cargo/env
+```
+
+Verify the installation:
+
+```bash
+rustc --version
+cargo --version
+```
+
+### Clone the Repository
+
+```bash
+git clone https://github.com/jmichaelpace/GlobalThermonuclearWar.git
+cd GlobalThermonuclearWar
+```
+
+### Install Project Dependencies
+
+Cargo will automatically download and compile dependencies on first build:
 
 ```bash
 cargo build
 ```
+
+## Building
 
 ### Build for Development
 
