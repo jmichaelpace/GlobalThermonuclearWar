@@ -1,0 +1,27 @@
+[system]
+name = "RS-26 Rubezh"
+description = "Russian mobile IRBM/ICBM"
+country = "Russia"
+nato_designation = "SS-X-31"
+
+[classification]
+type = "IRBM"
+
+[range]
+min_range_km = 2000.0
+max_range_km = 5800.0
+
+[trajectory]
+apogee_base_km = 300.0
+apogee_range_factor = 0.12
+flight_time_base_sec = 600.0
+flight_time_range_factor = 0.15
+
+[boost]
+boost_phase_fraction = 0.1
+boost_velocity_km_s = 5.5
+
+[countermeasures]
+has_countermeasures = true
+default_decoys = 3
+max_decoys = 8

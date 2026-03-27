@@ -1,0 +1,15 @@
+[system]
+name = "AN/SPY-1D"
+description = "AEGIS phased array radar for ship-based BMD"
+country = "USA"
+
+[detection]
+detection_range_km = 500.0
+azimuth_coverage_deg = 360.0
+elevation_min_deg = 0.0
+elevation_max_deg = 90.0
+
+[tracking]
+max_simultaneous_tracks = 100
+track_update_rate_hz = 10.0
+minimum_rcs_dbsm = -20.0

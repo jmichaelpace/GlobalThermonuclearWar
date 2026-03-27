@@ -1,0 +1,28 @@
+[system]
+name = "Patriot"
+description = "PAC-3 MSE terminal defense"
+
+[detection]
+detection_range_km = 150.0
+engagement_range_km = 70.0
+
+[altitude_envelope]
+min_engagement_altitude_km = 0.5
+max_engagement_altitude_km = 40.0
+
+[kinematics]
+boost_duration_sec = 8.0
+boost_acceleration_g = 25.0
+max_velocity_km_s = 1.7
+terminal_maneuver_g = 50.0
+burnout_altitude_km = 15.0
+average_speed_km_s = 1.7
+
+[engagement]
+hit_probability = 0.70
+terminal_blend_factor = 0.60
+
+[kill_envelope]
+seeker_range_km = 30.0
+kill_radius_km = 2.0
+base_pk = 0.90

@@ -1,0 +1,18 @@
+[system]
+name = "STSS"
+description = "Space Tracking and Surveillance System - tracking demonstrator"
+country = "USA"
+
+[orbit]
+altitude_km = 1350.0
+orbital_period_hours = 1.9
+orbit_type = "LEO"
+inclination_deg = 58.0
+
+[sensor]
+sensor_type = "Infrared"
+coverage_angle_deg = 5.0
+detection_range_km = 3000.0
+can_detect_boost_phase = true
+can_track_midcourse = true
+revisit_time_sec = 0.5

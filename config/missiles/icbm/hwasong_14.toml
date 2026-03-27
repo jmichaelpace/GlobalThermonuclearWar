@@ -1,0 +1,27 @@
+[system]
+name = "Hwasong-14"
+description = "North Korean ICBM - intercontinental range"
+country = "DPRK"
+nato_designation = "KN-20"
+
+[classification]
+type = "ICBM"
+
+[range]
+min_range_km = 6700.0
+max_range_km = 10400.0
+
+[trajectory]
+apogee_base_km = 700.0
+apogee_range_factor = 0.08
+flight_time_base_sec = 1000.0
+flight_time_range_factor = 0.1
+
+[boost]
+boost_phase_fraction = 0.09
+boost_velocity_km_s = 6.5
+
+[countermeasures]
+has_countermeasures = true
+default_decoys = 1
+max_decoys = 4

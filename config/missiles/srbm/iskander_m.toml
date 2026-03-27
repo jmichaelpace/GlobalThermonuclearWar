@@ -1,0 +1,27 @@
+[system]
+name = "Iskander-M"
+description = "Russian road-mobile SRBM with quasi-ballistic trajectory"
+country = "Russia"
+nato_designation = "SS-26 Stone"
+
+[classification]
+type = "SRBM"
+
+[range]
+min_range_km = 50.0
+max_range_km = 500.0
+
+[trajectory]
+apogee_base_km = 50.0
+apogee_range_factor = 0.1
+flight_time_base_sec = 180.0
+flight_time_range_factor = 0.4
+
+[boost]
+boost_phase_fraction = 0.25
+boost_velocity_km_s = 2.1
+
+[countermeasures]
+has_countermeasures = true
+default_decoys = 2
+max_decoys = 4

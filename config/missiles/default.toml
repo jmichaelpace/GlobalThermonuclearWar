@@ -1,0 +1,26 @@
+[system]
+name = "Generic Ballistic Missile"
+description = "Default configuration for unspecified missiles"
+country = "Unknown"
+
+[classification]
+type = "MRBM"
+
+[range]
+min_range_km = 500.0
+max_range_km = 5000.0
+
+[trajectory]
+apogee_base_km = 150.0
+apogee_range_factor = 0.15
+flight_time_base_sec = 400.0
+flight_time_range_factor = 0.2
+
+[boost]
+boost_phase_fraction = 0.15
+boost_velocity_km_s = 3.5
+
+[countermeasures]
+has_countermeasures = false
+default_decoys = 0
+max_decoys = 3

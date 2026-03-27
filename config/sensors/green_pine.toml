@@ -1,0 +1,15 @@
+[system]
+name = "Green Pine"
+description = "EL/M-2080 long-range early warning and fire control radar"
+country = "Israel"
+
+[detection]
+detection_range_km = 800.0
+azimuth_coverage_deg = 120.0
+elevation_min_deg = 0.0
+elevation_max_deg = 70.0
+
+[tracking]
+max_simultaneous_tracks = 30
+track_update_rate_hz = 10.0
+minimum_rcs_dbsm = -20.0

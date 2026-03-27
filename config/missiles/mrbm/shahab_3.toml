@@ -1,0 +1,26 @@
+[system]
+name = "Shahab-3"
+description = "Iranian medium-range ballistic missile"
+country = "Iran"
+
+[classification]
+type = "MRBM"
+
+[range]
+min_range_km = 1000.0
+max_range_km = 2000.0
+
+[trajectory]
+apogee_base_km = 150.0
+apogee_range_factor = 0.18
+flight_time_base_sec = 400.0
+flight_time_range_factor = 0.25
+
+[boost]
+boost_phase_fraction = 0.15
+boost_velocity_km_s = 3.2
+
+[countermeasures]
+has_countermeasures = false
+default_decoys = 0
+max_decoys = 2

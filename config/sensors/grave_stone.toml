@@ -1,0 +1,15 @@
+[system]
+name = "92N6E Grave Stone"
+description = "S-400 multifunction engagement radar"
+country = "Russia"
+
+[detection]
+detection_range_km = 400.0
+azimuth_coverage_deg = 90.0
+elevation_min_deg = 0.0
+elevation_max_deg = 85.0
+
+[tracking]
+max_simultaneous_tracks = 6
+track_update_rate_hz = 20.0
+minimum_rcs_dbsm = -15.0

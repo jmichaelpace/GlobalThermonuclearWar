@@ -1,0 +1,17 @@
+# Build artifacts
+/target
+*.app
+*.dmg
+
+# Environment
+.env
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+
+# Local config
+.cargo/
+.claude/

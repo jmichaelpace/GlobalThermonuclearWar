@@ -1,0 +1,18 @@
+[system]
+name = "DSP"
+description = "Defense Support Program - legacy early warning satellite"
+country = "USA"
+
+[orbit]
+altitude_km = 35786.0
+orbital_period_hours = 24.0
+orbit_type = "GEO"
+inclination_deg = 0.0
+
+[sensor]
+sensor_type = "Infrared"
+coverage_angle_deg = 10.0
+detection_range_km = 4000.0
+can_detect_boost_phase = true
+can_track_midcourse = false
+revisit_time_sec = 10.0

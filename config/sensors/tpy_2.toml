@@ -1,0 +1,15 @@
+[system]
+name = "AN/TPY-2"
+description = "THAAD X-band radar for terminal phase tracking"
+country = "USA"
+
+[detection]
+detection_range_km = 1000.0
+azimuth_coverage_deg = 120.0
+elevation_min_deg = 0.0
+elevation_max_deg = 90.0
+
+[tracking]
+max_simultaneous_tracks = 50
+track_update_rate_hz = 20.0
+minimum_rcs_dbsm = -30.0

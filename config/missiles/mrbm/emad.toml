@@ -1,0 +1,26 @@
+[system]
+name = "Emad"
+description = "Iranian precision-guided MRBM with maneuverable reentry vehicle"
+country = "Iran"
+
+[classification]
+type = "MRBM"
+
+[range]
+min_range_km = 1500.0
+max_range_km = 1700.0
+
+[trajectory]
+apogee_base_km = 200.0
+apogee_range_factor = 0.15
+flight_time_base_sec = 450.0
+flight_time_range_factor = 0.22
+
+[boost]
+boost_phase_fraction = 0.14
+boost_velocity_km_s = 3.5
+
+[countermeasures]
+has_countermeasures = true
+default_decoys = 1
+max_decoys = 3

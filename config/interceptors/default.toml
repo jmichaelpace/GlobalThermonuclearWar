@@ -1,0 +1,24 @@
+[system]
+name = "Generic Interceptor"
+description = "Default interceptor configuration"
+
+[altitude_envelope]
+min_engagement_altitude_km = 10.0
+max_engagement_altitude_km = 100.0
+
+[kinematics]
+boost_duration_sec = 10.0
+boost_acceleration_g = 15.0
+max_velocity_km_s = 2.0
+terminal_maneuver_g = 25.0
+burnout_altitude_km = 20.0
+average_speed_km_s = 1.5
+
+[engagement]
+hit_probability = 0.70
+terminal_blend_factor = 0.30
+
+[kill_envelope]
+seeker_range_km = 30.0
+kill_radius_km = 5.0
+base_pk = 0.70

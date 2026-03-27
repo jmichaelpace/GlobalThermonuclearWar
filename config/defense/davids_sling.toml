@@ -1,0 +1,28 @@
+[system]
+name = "David's Sling"
+description = "Israeli mid-tier defense with Stunner missile"
+
+[detection]
+detection_range_km = 160.0
+engagement_range_km = 160.0
+
+[altitude_envelope]
+min_engagement_altitude_km = 15.0
+max_engagement_altitude_km = 70.0
+
+[kinematics]
+boost_duration_sec = 10.0
+boost_acceleration_g = 15.0
+max_velocity_km_s = 2.0
+terminal_maneuver_g = 40.0
+burnout_altitude_km = 20.0
+average_speed_km_s = 1.0
+
+[engagement]
+hit_probability = 0.85
+terminal_blend_factor = 0.50
+
+[kill_envelope]
+seeker_range_km = 40.0
+kill_radius_km = 15.0
+base_pk = 0.85

@@ -1,0 +1,18 @@
+[system]
+name = "Cosmos-2499"
+description = "Russian space surveillance satellite"
+country = "Russia"
+
+[orbit]
+altitude_km = 1500.0
+orbital_period_hours = 2.0
+orbit_type = "LEO"
+inclination_deg = 82.0
+
+[sensor]
+sensor_type = "Radar"
+coverage_angle_deg = 3.0
+detection_range_km = 2000.0
+can_detect_boost_phase = false
+can_track_midcourse = true
+revisit_time_sec = 5.0

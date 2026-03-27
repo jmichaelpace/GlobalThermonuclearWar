@@ -1,0 +1,15 @@
+[system]
+name = "EL/M-2084"
+description = "Multi-Mission Radar for Iron Dome and David's Sling"
+country = "Israel"
+
+[detection]
+detection_range_km = 100.0
+azimuth_coverage_deg = 120.0
+elevation_min_deg = -2.0
+elevation_max_deg = 85.0
+
+[tracking]
+max_simultaneous_tracks = 200
+track_update_rate_hz = 50.0
+minimum_rcs_dbsm = 0.0

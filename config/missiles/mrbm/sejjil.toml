@@ -1,0 +1,26 @@
+[system]
+name = "Sejjil"
+description = "Iranian two-stage solid-fuel MRBM"
+country = "Iran"
+
+[classification]
+type = "MRBM"
+
+[range]
+min_range_km = 2000.0
+max_range_km = 2500.0
+
+[trajectory]
+apogee_base_km = 250.0
+apogee_range_factor = 0.16
+flight_time_base_sec = 500.0
+flight_time_range_factor = 0.2
+
+[boost]
+boost_phase_fraction = 0.12
+boost_velocity_km_s = 4.0
+
+[countermeasures]
+has_countermeasures = true
+default_decoys = 1
+max_decoys = 4

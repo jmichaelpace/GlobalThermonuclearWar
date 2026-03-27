@@ -1,0 +1,18 @@
+[system]
+name = "Ofek"
+description = "Israeli reconnaissance and early warning satellite"
+country = "Israel"
+
+[orbit]
+altitude_km = 600.0
+orbital_period_hours = 1.6
+orbit_type = "LEO"
+inclination_deg = 143.0
+
+[sensor]
+sensor_type = "Optical"
+coverage_angle_deg = 2.0
+detection_range_km = 1500.0
+can_detect_boost_phase = true
+can_track_midcourse = false
+revisit_time_sec = 3.0
