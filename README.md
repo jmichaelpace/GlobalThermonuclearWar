@@ -57,6 +57,34 @@ Cargo will automatically download and compile dependencies on first build:
 cargo build
 ```
 
+### Configure MapTiler API Key
+
+The application uses MapTiler for map tiles. You'll need a free API key:
+
+1. **Create a MapTiler account:**
+   - Go to [https://www.maptiler.com/](https://www.maptiler.com/)
+   - Click "Sign Up" and create a free account
+
+2. **Get your API key:**
+   - After signing in, go to [https://cloud.maptiler.com/account/keys/](https://cloud.maptiler.com/account/keys/)
+   - Copy your API key (the free tier includes 100,000 requests/month)
+
+3. **Create a `.env` file** in the project root directory:
+
+   ```bash
+   echo 'MAPTILER_API_KEY=your_api_key_here' > .env
+   ```
+
+   Or manually create a file named `.env` with the following content:
+
+   ```
+   MAPTILER_API_KEY=your_api_key_here
+   ```
+
+   Replace `your_api_key_here` with your actual MapTiler API key.
+
+> **Note:** The `.env` file is excluded from git via `.gitignore` to keep your API key private.
+
 ## Building
 
 ### Build for Development
