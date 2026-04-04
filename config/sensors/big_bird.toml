@@ -13,3 +13,4 @@ elevation_max_deg = 70.0
 max_simultaneous_tracks = 80
 track_update_rate_hz = 6.0
 minimum_rcs_dbsm = -10.0
+radar_band = "S"  # S-band - search and acquisition

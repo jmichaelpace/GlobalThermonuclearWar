@@ -24,3 +24,9 @@ boost_velocity_km_s = 3.5
 has_countermeasures = false
 default_decoys = 0
 max_decoys = 3
+
+[radar_signature]
+# RCS values in dBsm (decibels relative to 1 square meter)
+rcs_boost_dbsm = 5.0       # Large during boost phase (exhaust plume)
+rcs_midcourse_dbsm = -5.0  # Small RV coasting in space
+rcs_terminal_dbsm = -10.0  # Smallest during terminal descent

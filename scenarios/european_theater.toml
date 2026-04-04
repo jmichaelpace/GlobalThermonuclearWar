@@ -1,0 +1,115 @@
+# European Theater
+# Russian strikes against NATO targets
+
+[metadata]
+id = "european_theater"
+name = "European Theater"
+description = "Russian strikes against NATO targets"
+region = "Europe"
+center_lat = 52.0
+center_lon = 20.0
+zoom = 3.5
+
+# NATO Defense - Poland
+[[defense_units]]
+name = "Aegis Ashore Poland"
+affiliation = "Friendly"
+lat = 53.8
+lon = 21.1
+type = "Aegis"
+interceptors = 24
+
+[[defense_units]]
+name = "Patriot Battery Poland"
+affiliation = "Friendly"
+lat = 52.2
+lon = 21.0
+type = "Patriot"
+interceptors = 64
+
+# Romania
+[[defense_units]]
+name = "Aegis Ashore Romania"
+affiliation = "Friendly"
+lat = 43.9
+lon = 24.0
+type = "Aegis"
+interceptors = 24
+
+[[defense_units]]
+name = "Patriot Battery Romania"
+affiliation = "Friendly"
+lat = 44.4
+lon = 26.1
+type = "Patriot"
+interceptors = 64
+
+# Germany
+[[defense_units]]
+name = "Patriot Battery Germany"
+affiliation = "Friendly"
+lat = 50.1
+lon = 8.7
+type = "Patriot"
+interceptors = 64
+
+# UK Naval
+[[defense_units]]
+name = "HMS Duncan (Type 45)"
+affiliation = "Friendly"
+lat = 51.0
+lon = 2.0
+type = "Aegis"
+interceptors = 48
+
+# Early Warning
+[[radar_stations]]
+name = "Fylingdales"
+affiliation = "Friendly"
+lat = 54.4
+lon = -0.7
+range_km = 3000.0
+
+[[radar_stations]]
+name = "Thule"
+affiliation = "Friendly"
+lat = 76.5
+lon = -68.7
+range_km = 3000.0
+
+# Russian Missiles
+[[missiles]]
+name = "Iskander-M #1"
+affiliation = "Hostile"
+origin_lat = 54.7
+origin_lon = 20.5
+target_lat = 52.2
+target_lon = 21.0
+launch_delay_sec = 20.0
+
+[[missiles]]
+name = "Iskander-M #2"
+affiliation = "Hostile"
+origin_lat = 54.7
+origin_lon = 20.5
+target_lat = 54.7
+target_lon = 25.3
+launch_delay_sec = 40.0
+
+[[missiles]]
+name = "SS-26 #1"
+affiliation = "Hostile"
+origin_lat = 55.8
+origin_lon = 37.6
+target_lat = 50.1
+target_lon = 8.7
+launch_delay_sec = 60.0
+
+[[missiles]]
+name = "SS-26 #2"
+affiliation = "Hostile"
+origin_lat = 55.8
+origin_lon = 37.6
+target_lat = 52.5
+target_lon = 13.4
+launch_delay_sec = 80.0

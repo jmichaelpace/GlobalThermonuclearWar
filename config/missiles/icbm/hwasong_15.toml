@@ -25,3 +25,8 @@ boost_velocity_km_s = 7.0
 has_countermeasures = true
 default_decoys = 2
 max_decoys = 6
+
+[radar_signature]
+rcs_boost_dbsm = 15.0      # Very large during boost (massive exhaust plume)
+rcs_midcourse_dbsm = 0.0   # Larger RV visible in space
+rcs_terminal_dbsm = -5.0   # Still relatively large RV

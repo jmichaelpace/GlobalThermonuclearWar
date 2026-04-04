@@ -8,6 +8,7 @@ detection_range_km = 150.0
 azimuth_coverage_deg = 120.0
 elevation_min_deg = 0.0
 elevation_max_deg = 90.0
+radar_band = "C"  # C-band (5.6 GHz) - balanced range and resolution
 
 [tracking]
 max_simultaneous_tracks = 50

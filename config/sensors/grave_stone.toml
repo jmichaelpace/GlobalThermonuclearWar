@@ -13,3 +13,4 @@ elevation_max_deg = 85.0
 max_simultaneous_tracks = 6
 track_update_rate_hz = 20.0
 minimum_rcs_dbsm = -15.0
+radar_band = "X"  # X-band - fire control, high precision

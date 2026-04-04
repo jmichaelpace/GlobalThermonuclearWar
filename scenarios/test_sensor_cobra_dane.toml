@@ -1,0 +1,70 @@
+# Cobra Dane Radar Test Scenario
+# Shemya Island, Alaska - Early warning and tracking radar
+# Detection range: ~3000km, phased-array L-band radar
+
+[metadata]
+id = "test_sensor_cobra_dane"
+name = "Cobra Dane Test"
+description = "Cobra Dane early warning radar tracking test (Shemya Island)"
+region = "Pacific"
+center_lat = 52.7
+center_lon = 174.1
+zoom = 2.5
+
+# Cobra Dane radar (Shemya Island, Alaska)
+[[radar_stations]]
+name = "Cobra Dane"
+affiliation = "Friendly"
+lat = 52.7
+lon = 174.1
+range_km = 3000.0
+
+# Close range ICBM - ~800km from radar
+[[missiles]]
+name = "ICBM Close"
+affiliation = "Hostile"
+origin_lat = 45.0
+origin_lon = 168.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 15.0
+
+# Near range ICBM - ~1500km from radar
+[[missiles]]
+name = "ICBM Near"
+affiliation = "Hostile"
+origin_lat = 40.0
+origin_lon = 125.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 30.0
+
+# Mid range ICBM - ~2000km from radar
+[[missiles]]
+name = "ICBM Mid"
+affiliation = "Hostile"
+origin_lat = 42.0
+origin_lon = 130.0
+target_lat = 34.0
+target_lon = -118.2
+launch_delay_sec = 45.0
+
+# Far range ICBM - ~2800km from radar (near limit)
+[[missiles]]
+name = "ICBM Far"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 127.0
+target_lat = 47.6
+target_lon = -122.3
+launch_delay_sec = 60.0
+
+# Beyond detection range - ~3500km
+[[missiles]]
+name = "ICBM Beyond"
+affiliation = "Hostile"
+origin_lat = 30.0
+origin_lon = 120.0
+target_lat = 38.9
+target_lon = -77.0
+launch_delay_sec = 75.0

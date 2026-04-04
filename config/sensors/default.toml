@@ -7,8 +7,9 @@ detection_range_km = 200.0
 azimuth_coverage_deg = 360.0
 elevation_min_deg = 0.0
 elevation_max_deg = 90.0
+radar_band = "X"  # X-band (8-12 GHz) - fire control standard
 
 [tracking]
 max_simultaneous_tracks = 20
 track_update_rate_hz = 5.0
-minimum_rcs_dbsm = 0.0
+minimum_rcs_dbsm = -20.0  # Can detect small RCS targets

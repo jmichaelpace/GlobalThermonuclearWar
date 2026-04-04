@@ -1,0 +1,49 @@
+# GBI (Ground-Based Interceptor) Test Scenario
+# Isolated test of GBI + SBX radar against ICBM midcourse
+# Engagement envelope: 200-2000km altitude, ~2000km range
+
+[metadata]
+id = "test_gbi"
+name = "GBI Test"
+description = "GBI Site vs ICBM midcourse (200-2000km altitude envelope)"
+region = "Pacific"
+center_lat = 50.0
+center_lon = -160.0
+zoom = 2.5
+
+# Single GBI site
+[[defense_units]]
+name = "GBI Test Site"
+affiliation = "Friendly"
+lat = 64.0
+lon = -152.0
+type = "GBI"
+interceptors = 44
+
+# SBX radar for long-range tracking
+[[radar_stations]]
+name = "SBX Radar"
+affiliation = "Friendly"
+lat = 60.0
+lon = -160.0
+range_km = 2000.0
+
+# ICBM - ~8000km range, apogee ~800km (mid envelope)
+[[missiles]]
+name = "ICBM-1"
+affiliation = "Hostile"
+origin_lat = 40.0
+origin_lon = 125.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 20.0
+
+# ICBM - ~10000km range, apogee ~1000km (high midcourse)
+[[missiles]]
+name = "ICBM-2"
+affiliation = "Hostile"
+origin_lat = 42.0
+origin_lon = 128.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 40.0

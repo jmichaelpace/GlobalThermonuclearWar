@@ -1,0 +1,60 @@
+# Sea-Based X-band (SBX) Radar Test Scenario
+# Tests long-range discrimination and tracking of ICBM targets
+# Detection range: ~1000-2000km, optimized for midcourse phase
+
+[metadata]
+id = "test_sensor_sbx"
+name = "SBX Radar Test"
+description = "Sea-Based X-band radar discrimination and tracking test"
+region = "Pacific"
+center_lat = 55.0
+center_lon = -165.0
+zoom = 3.0
+
+# SBX radar platform (mobile, positioned in Pacific)
+[[radar_stations]]
+name = "SBX-1"
+affiliation = "Friendly"
+lat = 55.0
+lon = -165.0
+range_km = 2000.0
+
+# Near range ICBM - ~1000km from radar, apogee ~800km
+[[missiles]]
+name = "ICBM Near"
+affiliation = "Hostile"
+origin_lat = 40.0
+origin_lon = 125.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 20.0
+
+# Mid range ICBM - ~1500km from radar, apogee ~1000km
+[[missiles]]
+name = "ICBM Mid"
+affiliation = "Hostile"
+origin_lat = 42.0
+origin_lon = 130.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 40.0
+
+# Far range ICBM - ~2000km from radar, apogee ~1200km
+[[missiles]]
+name = "ICBM Far"
+affiliation = "Hostile"
+origin_lat = 45.0
+origin_lon = 135.0
+target_lat = 47.6
+target_lon = -122.3
+launch_delay_sec = 60.0
+
+# Very far range - beyond detection envelope (~2500km)
+[[missiles]]
+name = "ICBM Beyond"
+affiliation = "Hostile"
+origin_lat = 50.0
+origin_lon = 140.0
+target_lat = 34.0
+target_lon = -118.2
+launch_delay_sec = 80.0

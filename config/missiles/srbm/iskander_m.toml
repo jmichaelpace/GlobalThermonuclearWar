@@ -25,3 +25,8 @@ boost_velocity_km_s = 2.1
 has_countermeasures = true
 default_decoys = 2
 max_decoys = 4
+
+[radar_signature]
+rcs_boost_dbsm = 3.0       # Smaller boost signature (compact motor)
+rcs_midcourse_dbsm = -15.0 # Low-observable design
+rcs_terminal_dbsm = -20.0  # Very stealthy terminal phase

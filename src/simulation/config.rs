@@ -90,7 +90,7 @@ impl DefenseConfigRegistry {
         ];
 
         for (defense_type, filename) in defense_types {
-            let file_path = config_dir.join("defense").join(filename);
+            let file_path = config_dir.join("platform").join(filename);
 
             let config = if file_path.exists() {
                 match Self::load_config_file(&file_path) {
@@ -424,6 +424,51 @@ impl DefenseConfigRegistry {
 // Sensor Configuration
 // ============================================================================
 
+/// Radar frequency bands with different characteristics
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum RadarBand {
+    #[serde(rename = "L")]
+    L,  // 1-2 GHz: Long range, low attenuation, lower resolution
+    #[serde(rename = "S")]
+    S,  // 2-4 GHz: Good range, moderate attenuation, good resolution
+    #[serde(rename = "C")]
+    C,  // 4-8 GHz: Medium range, moderate-high attenuation
+    #[serde(rename = "X")]
+    X,  // 8-12 GHz: High resolution, higher attenuation, fire control
+    #[serde(rename = "Ku")]
+    Ku, // 12-18 GHz: Very high resolution, high attenuation
+}
+
+impl RadarBand {
+    /// Atmospheric attenuation coefficient (dB/km at sea level)
+    pub fn attenuation_coefficient(&self) -> f64 {
+        match self {
+            RadarBand::L => 0.005,   // Very low attenuation
+            RadarBand::S => 0.010,   // Low attenuation
+            RadarBand::C => 0.015,   // Moderate attenuation
+            RadarBand::X => 0.020,   // Higher attenuation
+            RadarBand::Ku => 0.030,  // High attenuation
+        }
+    }
+
+    /// Resolution/quality multiplier (higher frequency = better resolution)
+    pub fn quality_multiplier(&self) -> f64 {
+        match self {
+            RadarBand::L => 0.85,    // Lower resolution
+            RadarBand::S => 0.92,    // Good resolution
+            RadarBand::C => 0.96,    // Better resolution
+            RadarBand::X => 1.00,    // Excellent resolution (baseline)
+            RadarBand::Ku => 1.05,   // Outstanding resolution
+        }
+    }
+}
+
+impl Default for RadarBand {
+    fn default() -> Self {
+        RadarBand::X  // Default to X-band (most common for fire control)
+    }
+}
+
 /// Sensor detection parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorDetectionConfig {
@@ -431,6 +476,8 @@ pub struct SensorDetectionConfig {
     pub azimuth_coverage_deg: f64,
     pub elevation_min_deg: f64,
     pub elevation_max_deg: f64,
+    #[serde(default)]
+    pub radar_band: RadarBand,
 }
 
 /// Sensor tracking parameters
@@ -531,6 +578,7 @@ impl SensorConfigRegistry {
                 azimuth_coverage_deg: 360.0,
                 elevation_min_deg: 0.0,
                 elevation_max_deg: 90.0,
+                radar_band: RadarBand::X,
             },
             tracking: SensorTrackingConfig {
                 max_simultaneous_tracks: 20,
@@ -893,6 +941,27 @@ pub struct MissileCountermeasuresConfig {
     pub max_decoys: u32,
 }
 
+/// Radar cross-section configuration (phase-dependent)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissileRcsConfig {
+    /// RCS during boost phase in dBsm (typically large due to exhaust plume)
+    pub rcs_boost_dbsm: f64,
+    /// RCS during midcourse phase in dBsm (reentry vehicle in space)
+    pub rcs_midcourse_dbsm: f64,
+    /// RCS during terminal phase in dBsm (small, descending RV)
+    pub rcs_terminal_dbsm: f64,
+}
+
+impl Default for MissileRcsConfig {
+    fn default() -> Self {
+        Self {
+            rcs_boost_dbsm: 5.0,      // Large due to exhaust plume
+            rcs_midcourse_dbsm: -5.0, // Small RV in space
+            rcs_terminal_dbsm: -10.0, // Smallest signature
+        }
+    }
+}
+
 /// Complete missile type configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MissileConfig {
@@ -902,6 +971,8 @@ pub struct MissileConfig {
     pub trajectory: MissileTrajectoryConfig,
     pub boost: MissileBoostConfig,
     pub countermeasures: MissileCountermeasuresConfig,
+    #[serde(default)]
+    pub radar_signature: MissileRcsConfig,
 }
 
 /// Registry holding all missile configurations by variant name
@@ -1060,6 +1131,7 @@ impl MissileConfigRegistry {
                 default_decoys: 0,
                 max_decoys: 3,
             },
+            radar_signature: MissileRcsConfig::default(),
         }
     }
 

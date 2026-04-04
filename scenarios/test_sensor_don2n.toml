@@ -1,0 +1,70 @@
+# Don-2N Radar Test Scenario
+# Russian ABM radar protecting Moscow (A-135 system)
+# Detection range: ~1000km, phased-array battle management radar
+
+[metadata]
+id = "test_sensor_don2n"
+name = "Don-2N Radar Test"
+description = "Russian Don-2N ABM radar test (Moscow defense)"
+region = "Europe"
+center_lat = 55.8
+center_lon = 37.6
+zoom = 4.0
+
+# Don-2N radar (Moscow)
+[[radar_stations]]
+name = "Don-2N Pushkino"
+affiliation = "Friendly"
+lat = 55.9
+lon = 37.8
+range_km = 1000.0
+
+# SRBM - ~300km from radar
+[[missiles]]
+name = "SRBM Close"
+affiliation = "Hostile"
+origin_lat = 53.0
+origin_lon = 35.0
+target_lat = 55.8
+target_lon = 37.6
+launch_delay_sec = 10.0
+
+# MRBM - ~600km from radar
+[[missiles]]
+name = "MRBM Near"
+affiliation = "Hostile"
+origin_lat = 50.4
+origin_lon = 30.5
+target_lat = 55.8
+target_lon = 37.6
+launch_delay_sec = 25.0
+
+# IRBM - ~850km from radar
+[[missiles]]
+name = "IRBM Mid"
+affiliation = "Hostile"
+origin_lat = 52.2
+origin_lon = 21.0
+target_lat = 55.8
+target_lon = 37.6
+launch_delay_sec = 40.0
+
+# IRBM - ~1000km from radar (at limit)
+[[missiles]]
+name = "IRBM Limit"
+affiliation = "Hostile"
+origin_lat = 50.1
+origin_lon = 8.7
+target_lat = 55.8
+target_lon = 37.6
+launch_delay_sec = 55.0
+
+# Beyond range - ~1200km
+[[missiles]]
+name = "IRBM Beyond"
+affiliation = "Hostile"
+origin_lat = 48.8
+origin_lon = 2.3
+target_lat = 55.8
+target_lon = 37.6
+launch_delay_sec = 70.0

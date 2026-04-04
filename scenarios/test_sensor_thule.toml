@@ -1,0 +1,70 @@
+# Thule Radar Test Scenario
+# Thule Air Base, Greenland - BMEWS early warning
+# Detection range: ~3000km, UHF phased-array
+
+[metadata]
+id = "test_sensor_thule"
+name = "Thule BMEWS Test"
+description = "Thule early warning radar test (Greenland)"
+region = "Arctic"
+center_lat = 76.5
+center_lon = -68.7
+zoom = 2.5
+
+# Thule radar (Greenland)
+[[radar_stations]]
+name = "Thule BMEWS"
+affiliation = "Friendly"
+lat = 76.5
+lon = -68.7
+range_km = 3000.0
+
+# SLBM - ~1000km from radar (Arctic submarine launch)
+[[missiles]]
+name = "SLBM Near"
+affiliation = "Hostile"
+origin_lat = 70.0
+origin_lon = -50.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 20.0
+
+# ICBM - ~1800km from radar
+[[missiles]]
+name = "ICBM Mid"
+affiliation = "Hostile"
+origin_lat = 60.0
+origin_lon = 50.0
+target_lat = 38.9
+target_lon = -77.0
+launch_delay_sec = 40.0
+
+# ICBM - ~2500km from radar
+[[missiles]]
+name = "ICBM Far"
+affiliation = "Hostile"
+origin_lat = 55.8
+origin_lon = 37.6
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 60.0
+
+# ICBM - ~3000km from radar (at limit)
+[[missiles]]
+name = "ICBM Limit"
+affiliation = "Hostile"
+origin_lat = 50.0
+origin_lon = 30.0
+target_lat = 38.9
+target_lon = -77.0
+launch_delay_sec = 80.0
+
+# Beyond range - ~3500km
+[[missiles]]
+name = "ICBM Beyond"
+affiliation = "Hostile"
+origin_lat = 45.0
+origin_lon = 20.0
+target_lat = 34.0
+target_lon = -118.2
+launch_delay_sec = 100.0

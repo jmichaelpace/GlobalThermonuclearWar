@@ -92,3 +92,31 @@ src/
 - See Cargo.toml for complete dependency list
 - Prefer crates from the egui ecosystem when possible
 - Check crates.io for compatibility before adding dependencies
+
+## Simulation Accuracy
+
+### Real-World Fidelity
+This simulation models real-world missile defense systems and must maintain accuracy:
+
+- **Preserve equipment specifications**: Detection ranges, engagement ranges, interceptor counts, and sensor capabilities must match real-world published data
+- **Config files are authoritative**: Equipment specs in `config/` TOML files represent researched real-world values - do not modify without verification
+- **Defense system capabilities**:
+  - Patriot PAC-3: ~70km engagement range, terminal phase
+  - THAAD: ~200km, high endo/exo-atmospheric
+  - Aegis SM-3: ~500km, exo-atmospheric midcourse
+  - GBI: ~2000km, midcourse intercept
+  - Iron Dome: ~70km, short-range rockets
+  - Arrow 3: ~400km, exo-atmospheric
+  - S-400: ~400km, multi-layer
+
+### Physics and Detection
+- Radar detection follows inverse-square law (R⁴ for radar equation)
+- RCS (Radar Cross Section) values in dBsm affect detection probability
+- Atmospheric attenuation increases with range and decreases with altitude
+- Ballistic trajectories use realistic apogee calculations based on range
+
+### When Modifying Simulation Code
+1. Verify changes don't break detection/engagement range accuracy
+2. Test that defense systems engage appropriate threat types
+3. Ensure interceptors launch when threats are in engagement envelope
+4. Run the simulation with each scenario to verify expected behaviors

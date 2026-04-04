@@ -2,9 +2,9 @@ use crate::map::{GeoCoord, GibsTileCache, GibsTileCoord, TileCache, Viewport};
 use crate::rendering::{DetectionOverlays, MilitarySymbols};
 use crate::scenario::{get_scenarios, ScenarioDefinition};
 use crate::simulation::{
-    bearing, haversine_distance, Affiliation, BallisticTrajectory, DefenseUnit, EntityId,
-    Interceptor, Missile, MissileStatus, RadarStation, Satellite, SensorType, SimulationEngine,
-    TimeScale,
+    bearing, calculate_position_from_bearing_range, haversine_distance, Affiliation,
+    BallisticTrajectory, DefenseUnit, EntityId, FusedTrack, Interceptor, Missile, MissileStatus,
+    RadarStation, Satellite, SensorKind, SensorType, SimulationEngine, TimeScale,
 };
 use eframe::egui;
 use std::time::Instant;
@@ -23,6 +23,15 @@ pub enum Selection {
 pub enum ViewMode {
     Map2D,   // Traditional flat map (Mercator)
     Globe,   // 3D globe (orthographic projection)
+}
+
+/// Track visualization mode
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackViewMode {
+    /// Show actual missile positions (omniscient view)
+    TrueTrack,
+    /// Show positions as sensors perceive them (with uncertainty)
+    DetectedTrack,
 }
 
 /// Globe view state
@@ -326,6 +335,12 @@ pub struct App {
     globe_state: GlobeState,
     // NASA GIBS tile cache for globe view
     gibs_tile_cache: GibsTileCache,
+    // Track view mode (True or Detected)
+    track_view_mode: TrackViewMode,
+    // Whether to show false alarms in detected mode
+    show_false_alarms: bool,
+    // Cached scenarios (loaded once at startup)
+    scenarios: Vec<ScenarioDefinition>,
 }
 
 impl App {
@@ -363,6 +378,9 @@ impl App {
             view_mode: ViewMode::Map2D,
             globe_state: GlobeState::default(),
             gibs_tile_cache: GibsTileCache::new(),
+            track_view_mode: TrackViewMode::TrueTrack,
+            show_false_alarms: true,
+            scenarios, // Cache scenarios loaded at startup
         }
     }
 
@@ -1632,18 +1650,38 @@ impl App {
             }
         }
 
-        // Draw missiles
-        for missile in &self.simulation.missiles {
-            if let Some(pos) = self.globe_state.geo_to_screen(missile.position, screen_center) {
-                let heading = bearing(missile.position, missile.target);
-                MilitarySymbols::draw_missile(
-                    painter,
-                    pos,
-                    missile.affiliation,
-                    missile.status,
-                    ((heading - 90.0) as f32).to_radians(),
-                    8.0,
-                );
+        // Draw missiles - check track view mode
+        match self.track_view_mode {
+            TrackViewMode::TrueTrack => {
+                // Show actual missile positions
+                for missile in &self.simulation.missiles {
+                    if let Some(pos) = self.globe_state.geo_to_screen(missile.position, screen_center) {
+                        let heading = bearing(missile.position, missile.target);
+                        MilitarySymbols::draw_missile(
+                            painter,
+                            pos,
+                            missile.affiliation,
+                            missile.status,
+                            ((heading - 90.0) as f32).to_radians(),
+                            8.0,
+                            None, // No track quality in true track mode
+                            false, // Not fire control locked in true track mode
+                        );
+                    }
+                }
+            }
+            TrackViewMode::DetectedTrack => {
+                // Show missiles at sensor-perceived positions with uncertainty
+                let defense_unit_ids: Vec<u64> = self.simulation.defense_units.iter().map(|u| u.id).collect();
+                let fused_tracks = self.simulation.detection.get_all_fused_tracks(&defense_unit_ids);
+                for track in &fused_tracks {
+                    self.render_detected_missile_globe(painter, screen_center, &track);
+                }
+
+                // Render false alarms if enabled
+                if self.show_false_alarms {
+                    self.render_false_alarms_globe(painter, screen_center);
+                }
             }
         }
 
@@ -1717,7 +1755,8 @@ impl App {
     fn render_detection_ranges_globe(&self, painter: &egui::Painter, screen_center: egui::Pos2) {
         // Defense unit ranges
         for unit in &self.simulation.defense_units {
-            let detection_range_km = unit.detection_range_km();
+            // Show actual max detection range (1.5× nominal for probabilistic detection)
+            let max_detection_range_km = unit.detection_range_km() * 1.5;
             let engagement_range_km = unit.engagement_range_km();
 
             let stroke_color = match unit.affiliation {
@@ -1737,7 +1776,7 @@ impl App {
                 painter,
                 screen_center,
                 unit.position,
-                detection_range_km,
+                max_detection_range_km,
                 egui::Stroke::new(1.5, stroke_color),
             );
 
@@ -1759,11 +1798,14 @@ impl App {
                 Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(220, 220, 100, 100),
             };
 
+            // Show actual max detection range (1.5× nominal for probabilistic detection)
+            let max_detection_range_km = station.detection_range_km * 1.5;
+
             self.draw_range_circle_globe(
                 painter,
                 screen_center,
                 station.position,
-                station.detection_range_km,
+                max_detection_range_km,
                 egui::Stroke::new(1.5, stroke_color),
             );
         }
@@ -1873,6 +1915,94 @@ impl App {
                     // Draw dashed tracking line
                     let stroke = egui::Stroke::new(1.0, color);
                     painter.line_segment([from, to], stroke);
+                }
+            }
+        }
+    }
+
+    /// Render a detected missile on the globe view
+    fn render_detected_missile_globe(
+        &self,
+        painter: &egui::Painter,
+        screen_center: egui::Pos2,
+        fused_track: &FusedTrack,
+    ) {
+        // Find the actual missile to get its position
+        let missile = self
+            .simulation
+            .missiles
+            .iter()
+            .find(|m| m.id == fused_track.target_id);
+
+        let Some(missile) = missile else {
+            return; // Can't render without the missile
+        };
+
+        if let Some(pos) = self
+            .globe_state
+            .geo_to_screen(missile.position, screen_center)
+        {
+            // Convert uncertainty to screen pixels (approximate)
+            // On globe, 1 degree ≈ globe_radius * (π/180) pixels
+            let deg_per_pixel = 180.0 / (std::f64::consts::PI * self.globe_state.radius as f64);
+            let uncertainty_deg = fused_track.uncertainty_radius_km / 111.32;
+            let uncertainty_pixels = (uncertainty_deg / deg_per_pixel).max(8.0) as f32;
+
+            // Draw uncertainty ellipse
+            DetectionOverlays::draw_uncertainty_ellipse(
+                painter,
+                pos,
+                uncertainty_pixels,
+                fused_track.fused_quality,
+            );
+
+            let heading = bearing(missile.position, missile.target);
+
+            // Fire control lock only when defense unit radar is tracking
+            // AND track quality requirements are met
+            let fire_control_locked = fused_track.has_fire_control_lock
+                && fused_track.measurement_count >= 3
+                && fused_track.fused_quality >= 0.4
+                && fused_track.staleness_seconds <= 5.0;
+
+            // Draw missile symbol
+            MilitarySymbols::draw_missile(
+                painter,
+                pos,
+                Affiliation::Hostile,
+                MissileStatus::Midcourse,
+                ((heading - 90.0) as f32).to_radians(),
+                8.0,
+                Some(fused_track.fused_quality), // Pass track quality for transparency
+                fire_control_locked,
+            );
+
+            // Draw sensor count badge
+            self.draw_track_info_badge(painter, pos, fused_track);
+        }
+    }
+
+    /// Render false alarms on the globe view
+    fn render_false_alarms_globe(&self, painter: &egui::Painter, screen_center: egui::Pos2) {
+        for detection in &self.simulation.detection.active_detections {
+            if !detection.is_false_alarm {
+                continue;
+            }
+
+            // Get sensor position to calculate false alarm location
+            if let Some(sensor_pos) = self.get_sensor_position(detection.sensor_id) {
+                let false_alarm_pos = calculate_position_from_bearing_range(
+                    sensor_pos,
+                    detection.bearing_deg,
+                    detection.range_km,
+                );
+
+                if let Some(pos) = self.globe_state.geo_to_screen(false_alarm_pos, screen_center) {
+                    DetectionOverlays::draw_false_alarm_marker(
+                        painter,
+                        pos,
+                        detection.detection_quality,
+                    );
                 }
             }
         }
@@ -2062,9 +2192,27 @@ impl App {
             self.render_satellite(painter, screen_rect, satellite);
         }
 
-        // Draw missiles
-        for missile in &self.simulation.missiles {
-            self.render_missile(painter, screen_rect, missile);
+        // Draw missiles - check track view mode
+        match self.track_view_mode {
+            TrackViewMode::TrueTrack => {
+                // Show actual missile positions
+                for missile in &self.simulation.missiles {
+                    self.render_missile(painter, screen_rect, missile);
+                }
+            }
+            TrackViewMode::DetectedTrack => {
+                // Show missiles at sensor-perceived positions with uncertainty
+                let defense_unit_ids: Vec<u64> = self.simulation.defense_units.iter().map(|u| u.id).collect();
+                let fused_tracks = self.simulation.detection.get_all_fused_tracks(&defense_unit_ids);
+                for track in &fused_tracks {
+                    self.render_detected_missile(painter, screen_rect, &track);
+                }
+
+                // Render false alarms if enabled
+                if self.show_false_alarms {
+                    self.render_false_alarms(painter, screen_rect);
+                }
+            }
         }
 
         // Draw interceptors
@@ -2080,10 +2228,12 @@ impl App {
         // Defense unit detection ranges
         for unit in &self.simulation.defense_units {
             let positions = self.viewport.geo_to_screen_wrapped(unit.position, screen_rect);
-            let range_km = unit.detection_range_km();
+
+            // Show actual max detection range (1.5× nominal for probabilistic detection)
+            let max_range_km = unit.detection_range_km() * 1.5;
 
             // Convert km to screen pixels (approximate)
-            let range_deg = range_km / 111.32;
+            let range_deg = max_range_km / 111.32;
             let base_center = self.viewport.geo_to_screen(unit.position, screen_rect);
             let edge_pos = GeoCoord::new(
                 unit.position.lat + range_deg,
@@ -2110,7 +2260,11 @@ impl App {
         // Radar station detection ranges
         for station in &self.simulation.radar_stations {
             let positions = self.viewport.geo_to_screen_wrapped(station.position, screen_rect);
-            let range_deg = station.detection_range_km / 111.32;
+
+            // Show actual max detection range (1.5× nominal for probabilistic detection)
+            let max_range_km = station.detection_range_km * 1.5;
+            let range_deg = max_range_km / 111.32;
+
             let base_center = self.viewport.geo_to_screen(station.position, screen_rect);
             let edge_pos = GeoCoord::new(
                 station.position.lat + range_deg,
@@ -2577,8 +2731,181 @@ impl App {
                 missile.status,
                 heading,
                 10.0,
+                None, // No track quality in true track mode
+                false, // Not fire control locked in true track mode
             );
         }
+    }
+
+    /// Render a missile based on sensor detection (not true position)
+    /// Shows uncertainty ellipse based on track quality
+    fn render_detected_missile(
+        &self,
+        painter: &egui::Painter,
+        screen_rect: egui::Rect,
+        fused_track: &FusedTrack,
+    ) {
+        // Find the actual missile to get its position (using actual position since
+        // predicted_position tracking isn't fully implemented yet)
+        let missile = self
+            .simulation
+            .missiles
+            .iter()
+            .find(|m| m.id == fused_track.target_id);
+
+        let Some(missile) = missile else {
+            return; // Can't render without the missile
+        };
+
+        let positions = self
+            .viewport
+            .geo_to_screen_wrapped(missile.position, screen_rect);
+
+        // Convert uncertainty from km to screen pixels
+        let km_per_degree = 111.32;
+        let uncertainty_deg = fused_track.uncertainty_radius_km / km_per_degree;
+        let center_screen = self.viewport.geo_to_screen(missile.position, screen_rect);
+        let edge_pos = GeoCoord::new(
+            missile.position.lat + uncertainty_deg,
+            missile.position.lon,
+        );
+        let edge_screen = self.viewport.geo_to_screen(edge_pos, screen_rect);
+        let uncertainty_pixels = (center_screen.y - edge_screen.y).abs().max(8.0);
+
+        let bearing_deg = bearing(missile.position, missile.target);
+        let heading = ((bearing_deg - 90.0) as f32).to_radians();
+
+        for pos in positions {
+            // Draw uncertainty ellipse first (behind the symbol)
+            DetectionOverlays::draw_uncertainty_ellipse(
+                painter,
+                pos,
+                uncertainty_pixels,
+                fused_track.fused_quality,
+            );
+
+            // Fire control lock only when defense unit radar is tracking
+            // AND track quality requirements are met
+            let fire_control_locked = fused_track.has_fire_control_lock
+                && fused_track.measurement_count >= 3
+                && fused_track.fused_quality >= 0.4
+                && fused_track.staleness_seconds <= 5.0;
+
+            // Draw missile symbol
+            MilitarySymbols::draw_missile(
+                painter,
+                pos,
+                Affiliation::Hostile, // Detected tracks are typically hostile
+                MissileStatus::Midcourse, // Use midcourse style for detected
+                heading,
+                10.0,
+                Some(fused_track.fused_quality), // Pass track quality for transparency
+                fire_control_locked,
+            );
+
+            // Draw sensor count badge
+            self.draw_track_info_badge(painter, pos, fused_track);
+        }
+    }
+
+    /// Draw a small badge showing track info (sensor count, quality)
+    fn draw_track_info_badge(
+        &self,
+        painter: &egui::Painter,
+        pos: egui::Pos2,
+        track: &FusedTrack,
+    ) {
+        let badge_pos = egui::Pos2::new(pos.x + 14.0, pos.y - 14.0);
+
+        // Background pill (wider to fit sensor count + quality)
+        let badge_size = egui::vec2(46.0, 14.0);
+        painter.rect_filled(
+            egui::Rect::from_center_size(badge_pos, badge_size),
+            4.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+        );
+
+        // Quality indicator color
+        let quality_color = if track.fused_quality > 0.7 {
+            egui::Color32::from_rgb(100, 255, 100) // Green
+        } else if track.fused_quality > 0.4 {
+            egui::Color32::from_rgb(255, 255, 100) // Yellow
+        } else {
+            egui::Color32::from_rgb(255, 150, 100) // Orange/red
+        };
+
+        // Text showing sensor count and quality percentage
+        let quality_pct = (track.fused_quality * 100.0) as u8;
+        let text = format!("{}S {}%", track.sensor_count, quality_pct);
+        painter.text(
+            badge_pos,
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(9.0),
+            quality_color,
+        );
+    }
+
+    /// Render false alarms (clutter/noise detections)
+    fn render_false_alarms(&self, painter: &egui::Painter, screen_rect: egui::Rect) {
+        for detection in &self.simulation.detection.active_detections {
+            if !detection.is_false_alarm {
+                continue;
+            }
+
+            // Get sensor position to calculate false alarm location
+            if let Some(sensor_pos) = self.get_sensor_position(detection.sensor_id) {
+                let false_alarm_pos = calculate_position_from_bearing_range(
+                    sensor_pos,
+                    detection.bearing_deg,
+                    detection.range_km,
+                );
+
+                let positions = self
+                    .viewport
+                    .geo_to_screen_wrapped(false_alarm_pos, screen_rect);
+
+                for pos in positions {
+                    DetectionOverlays::draw_false_alarm_marker(
+                        painter,
+                        pos,
+                        detection.detection_quality,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Get the position of a sensor by its ID
+    fn get_sensor_position(&self, sensor_id: EntityId) -> Option<GeoCoord> {
+        // Check defense units
+        if let Some(unit) = self
+            .simulation
+            .defense_units
+            .iter()
+            .find(|u| u.id == sensor_id)
+        {
+            return Some(unit.position);
+        }
+        // Check radar stations
+        if let Some(station) = self
+            .simulation
+            .radar_stations
+            .iter()
+            .find(|r| r.id == sensor_id)
+        {
+            return Some(station.position);
+        }
+        // Check satellites
+        if let Some(sat) = self
+            .simulation
+            .satellites
+            .iter()
+            .find(|s| s.id == sensor_id)
+        {
+            return Some(sat.position);
+        }
+        None
     }
 
     /// Render reentry glow effect - plasma heating during atmospheric entry
@@ -3134,7 +3461,9 @@ impl App {
                 ui.heading("Scenarios");
                 ui.separator();
 
-                let scenarios = get_scenarios();
+                // Clone scenario list to avoid borrow checker issues
+                // (We need to mutate self inside the iteration)
+                let scenarios = self.scenarios.clone();
 
                 for (idx, scenario) in scenarios.iter().enumerate() {
                     let is_current = idx == self.current_scenario;
@@ -3151,9 +3480,9 @@ impl App {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
-                                        ui.strong(scenario.name);
+                                        ui.strong(&scenario.name);
                                         ui.label(
-                                            egui::RichText::new(scenario.description)
+                                            egui::RichText::new(&scenario.description)
                                                 .small()
                                                 .weak(),
                                         );
@@ -3202,9 +3531,18 @@ impl App {
                 }
 
                 ui.separator();
+                ui.add_space(8.0);
+
+                // Reload scenarios button
+                if ui.button("🔄 Reload Scenarios").clicked() {
+                    self.scenarios = get_scenarios();
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
 
                 // Scenario info
-                if let Some(_scenario) = scenarios.get(self.current_scenario) {
+                if let Some(_scenario) = self.scenarios.get(self.current_scenario) {
                     ui.heading("Current Scenario");
                     ui.add_space(4.0);
 
@@ -3802,6 +4140,27 @@ impl eframe::App for App {
                     .clicked()
                 {
                     self.show_scenario_panel = !self.show_scenario_panel;
+                }
+
+                ui.separator();
+
+                // Track view mode toggle
+                ui.label("Track:");
+                if ui
+                    .selectable_label(self.track_view_mode == TrackViewMode::TrueTrack, "True")
+                    .clicked()
+                {
+                    self.track_view_mode = TrackViewMode::TrueTrack;
+                }
+                if ui
+                    .selectable_label(self.track_view_mode == TrackViewMode::DetectedTrack, "Detected")
+                    .clicked()
+                {
+                    self.track_view_mode = TrackViewMode::DetectedTrack;
+                }
+                // Only show false alarm toggle when in detected mode
+                if self.track_view_mode == TrackViewMode::DetectedTrack {
+                    ui.checkbox(&mut self.show_false_alarms, "Clutter");
                 }
 
                 ui.separator();

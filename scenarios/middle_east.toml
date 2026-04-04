@@ -1,0 +1,107 @@
+# Middle East Crisis
+# Iranian missile strikes against regional targets
+
+[metadata]
+id = "middle_east"
+name = "Middle East Crisis"
+description = "Iranian missile strikes against regional targets"
+region = "Middle East"
+center_lat = 30.0
+center_lon = 45.0
+zoom = 4.0
+
+# Israeli Defense
+[[defense_units]]
+name = "Iron Dome - Tel Aviv"
+affiliation = "Friendly"
+lat = 32.0
+lon = 34.8
+type = "IronDome"
+interceptors = 100
+
+[[defense_units]]
+name = "Arrow 3 Battery"
+affiliation = "Friendly"
+lat = 31.5
+lon = 34.5
+type = "Arrow3"
+interceptors = 24
+
+[[defense_units]]
+name = "David's Sling"
+affiliation = "Friendly"
+lat = 32.8
+lon = 35.0
+type = "DavidsSling"
+interceptors = 48
+
+# Saudi Defense
+[[defense_units]]
+name = "Patriot - Riyadh"
+affiliation = "Friendly"
+lat = 24.7
+lon = 46.7
+type = "Patriot"
+interceptors = 64
+
+[[defense_units]]
+name = "THAAD - UAE"
+affiliation = "Friendly"
+lat = 24.5
+lon = 54.5
+type = "THAAD"
+interceptors = 48
+
+# US Naval Support
+[[defense_units]]
+name = "USS Carney (Aegis)"
+affiliation = "Friendly"
+lat = 26.0
+lon = 52.0
+type = "Aegis"
+interceptors = 96
+
+# Radar
+[[radar_stations]]
+name = "AN/TPY-2 Israel"
+affiliation = "Friendly"
+lat = 30.5
+lon = 34.9
+range_km = 1000.0
+
+# Iranian Missiles
+[[missiles]]
+name = "Shahab-3 #1"
+affiliation = "Hostile"
+origin_lat = 35.7
+origin_lon = 51.4
+target_lat = 32.0
+target_lon = 34.8
+launch_delay_sec = 20.0
+
+[[missiles]]
+name = "Shahab-3 #2"
+affiliation = "Hostile"
+origin_lat = 34.3
+origin_lon = 47.1
+target_lat = 32.0
+target_lon = 34.8
+launch_delay_sec = 40.0
+
+[[missiles]]
+name = "Emad #1"
+affiliation = "Hostile"
+origin_lat = 35.7
+origin_lon = 51.4
+target_lat = 24.7
+target_lon = 46.7
+launch_delay_sec = 60.0
+
+[[missiles]]
+name = "Sejjil #1"
+affiliation = "Hostile"
+origin_lat = 36.0
+origin_lon = 52.0
+target_lat = 24.5
+target_lon = 54.5
+launch_delay_sec = 80.0

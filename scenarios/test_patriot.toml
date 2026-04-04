@@ -1,0 +1,51 @@
+# Patriot PAC-3 Test Scenario
+# Isolated test of Patriot + MPQ-53/65 radar against SRBM terminal phase
+# Engagement envelope: 0.5-40km altitude, ~70km range
+
+[metadata]
+id = "test_patriot"
+name = "Patriot Test"
+description = "Patriot Battery vs SRBM terminal phase (0.5-40km altitude)"
+region = "Middle East"
+center_lat = 31.5
+center_lon = 34.8
+zoom = 5.0
+
+# Single Patriot battery
+[[defense_units]]
+name = "Patriot Test Battery"
+affiliation = "Friendly"
+lat = 31.5
+lon = 34.8
+type = "Patriot"
+interceptors = 64
+
+# SRBM - Short range ~150km, low apogee ~30km (terminal phase engagement)
+[[missiles]]
+name = "SRBM-1"
+affiliation = "Hostile"
+origin_lat = 32.0
+origin_lon = 36.0
+target_lat = 31.5
+target_lon = 34.8
+launch_delay_sec = 10.0
+
+# SRBM - Short range ~200km, apogee ~40km (at envelope limit)
+[[missiles]]
+name = "SRBM-2"
+affiliation = "Hostile"
+origin_lat = 33.0
+origin_lon = 36.5
+target_lat = 31.5
+target_lon = 34.8
+launch_delay_sec = 20.0
+
+# SRBM - Very short range ~100km, apogee ~20km (well within envelope)
+[[missiles]]
+name = "SRBM-3"
+affiliation = "Hostile"
+origin_lat = 31.0
+origin_lon = 35.5
+target_lat = 31.5
+target_lon = 34.8
+launch_delay_sec = 30.0

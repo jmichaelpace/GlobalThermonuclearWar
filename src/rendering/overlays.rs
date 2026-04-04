@@ -19,10 +19,8 @@ impl DetectionOverlays {
         let sensor_screen = viewport.geo_to_screen(sensor_pos, screen_rect);
         let target_screen = viewport.geo_to_screen(target_pos, screen_rect);
 
-        // Skip if too far apart (date line crossing)
-        if sensor_screen.distance(target_screen) > screen_rect.width() * 0.5 {
-            return;
-        }
+        // No culling - let egui's painter handle clipping
+        // This ensures lines are visible at all zoom levels
 
         let base_color = match affiliation {
             Affiliation::Friendly => Color32::from_rgb(100, 200, 255),
@@ -57,7 +55,13 @@ impl DetectionOverlays {
         gap_length: f32,
     ) {
         let total_length = start.distance(end);
-        if total_length < 1.0 {
+        if total_length < 0.1 {
+            return; // Skip only if extremely short (same point)
+        }
+
+        // If line is very short, just draw a solid line instead of dashed
+        if total_length < dash_length * 2.0 {
+            painter.line_segment([start, end], Stroke::new(width, color));
             return;
         }
 
@@ -263,6 +267,94 @@ impl DetectionOverlays {
             painter.circle_filled(center, radius, fill_color);
             painter.circle_stroke(center, radius, Stroke::new(1.5, stroke_color));
         }
+    }
+
+    /// Draw an uncertainty ellipse around a tracked target
+    /// Color changes from green (good track) to red (poor track)
+    pub fn draw_uncertainty_ellipse(
+        painter: &egui::Painter,
+        center: Pos2,
+        radius_pixels: f32,
+        quality: f64,
+    ) {
+        // Color fades from green (good track) to yellow to red (poor track)
+        let r = ((1.0 - quality) * 255.0) as u8;
+        let g = (quality * 200.0 + (1.0 - quality) * 100.0) as u8;
+        let fill_alpha = 30;
+        let stroke_alpha = 150;
+
+        let fill_color = Color32::from_rgba_unmultiplied(r, g, 50, fill_alpha);
+        let stroke_color = Color32::from_rgba_unmultiplied(r, g, 50, stroke_alpha);
+
+        // Draw filled ellipse (using circle for simplicity - ellipse would need bearing info)
+        painter.circle_filled(center, radius_pixels, fill_color);
+        painter.circle_stroke(center, radius_pixels, Stroke::new(2.0, stroke_color));
+
+        // Draw pulsing outer ring for low quality tracks
+        if quality < 0.5 {
+            let pulse_color = Color32::from_rgba_unmultiplied(r, g, 50, (stroke_alpha as f64 * 0.4) as u8);
+            painter.circle_stroke(
+                center,
+                radius_pixels * 1.15,
+                Stroke::new(1.0, pulse_color),
+            );
+        }
+
+        // Draw crosshairs for very low quality (uncertain position)
+        if quality < 0.3 {
+            let cross_size = radius_pixels * 0.4;
+            let cross_color = Color32::from_rgba_unmultiplied(r, g, 50, 100);
+            painter.line_segment(
+                [
+                    Pos2::new(center.x - cross_size, center.y),
+                    Pos2::new(center.x + cross_size, center.y),
+                ],
+                Stroke::new(1.0, cross_color),
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(center.x, center.y - cross_size),
+                    Pos2::new(center.x, center.y + cross_size),
+                ],
+                Stroke::new(1.0, cross_color),
+            );
+        }
+    }
+
+    /// Draw a false alarm marker (clutter/noise detection)
+    /// Shows as yellow/orange X marker to distinguish from real tracks
+    pub fn draw_false_alarm_marker(
+        painter: &egui::Painter,
+        pos: Pos2,
+        quality: f64,
+    ) {
+        let size = 6.0 + (quality * 4.0) as f32;
+
+        // Use yellow/orange color for false alarms
+        let color = Color32::from_rgba_unmultiplied(255, 180, 50, 180);
+        let dim_color = Color32::from_rgba_unmultiplied(255, 180, 50, 80);
+
+        // Draw X shape for "unknown contact"
+        let offset = size * 0.7;
+        painter.line_segment(
+            [
+                Pos2::new(pos.x - offset, pos.y - offset),
+                Pos2::new(pos.x + offset, pos.y + offset),
+            ],
+            Stroke::new(2.5, color),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(pos.x + offset, pos.y - offset),
+                Pos2::new(pos.x - offset, pos.y + offset),
+            ],
+            Stroke::new(2.5, color),
+        );
+
+        // Dashed circle around it
+        painter.circle_stroke(pos, size * 1.3, Stroke::new(1.0, dim_color));
+
+        // Question mark indicator? No, keep it simple with just the X
     }
 }
 

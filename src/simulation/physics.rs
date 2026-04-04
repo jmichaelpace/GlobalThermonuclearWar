@@ -65,6 +65,14 @@ pub struct BallisticTrajectory {
     pub range_km: f64,
     pub max_altitude_km: f64,
     pub flight_time_sec: f64,
+    /// Uncertainty in estimated origin (km) - None for perfect trajectories
+    pub origin_uncertainty_km: Option<f64>,
+    /// Uncertainty in estimated target (km) - None for perfect trajectories
+    pub target_uncertainty_km: Option<f64>,
+    /// Uncertainty in estimated apogee (km) - None for perfect trajectories
+    pub apogee_uncertainty_km: Option<f64>,
+    /// True if this trajectory was reconstructed from sensor data
+    pub is_sensor_derived: bool,
 }
 
 impl BallisticTrajectory {
@@ -88,6 +96,10 @@ impl BallisticTrajectory {
             range_km,
             max_altitude_km,
             flight_time_sec,
+            origin_uncertainty_km: None,
+            target_uncertainty_km: None,
+            apogee_uncertainty_km: None,
+            is_sensor_derived: false,
         }
     }
 
@@ -106,6 +118,10 @@ impl BallisticTrajectory {
             range_km,
             max_altitude_km,
             flight_time_sec,
+            origin_uncertainty_km: None,
+            target_uncertainty_km: None,
+            apogee_uncertainty_km: None,
+            is_sensor_derived: false,
         }
     }
 
@@ -128,6 +144,105 @@ impl BallisticTrajectory {
         // Parabola: h(t) = 4 * max_h * t * (1 - t)
         // This gives 0 at t=0 and t=1, max at t=0.5
         4.0 * self.max_altitude_km * t * (1.0 - t)
+    }
+
+    /// Reconstruct a ballistic trajectory from sensor observations
+    /// Uses current position, velocity vector, and altitude to estimate trajectory parameters
+    /// Returns None if insufficient data or unrealistic trajectory
+    pub fn from_sensor_track(
+        current_position: GeoCoord,
+        current_altitude_km: f64,
+        velocity: &crate::simulation::VelocityEstimate,
+        current_flight_progress_estimate: f64,
+    ) -> Option<Self> {
+        // 1. Estimate total range from altitude (inverse of estimate_apogee)
+        let estimated_total_range_km = estimate_range_from_apogee(current_altitude_km);
+
+        // 2. Project backward and forward along heading to estimate origin/target
+        let heading = velocity.heading_deg;
+
+        // Distance traveled so far (rough estimate)
+        let distance_traveled = estimated_total_range_km * current_flight_progress_estimate;
+        let distance_remaining = estimated_total_range_km * (1.0 - current_flight_progress_estimate);
+
+        // Project backward to estimate origin
+        let reverse_heading = (heading + 180.0).rem_euclid(360.0);
+        let estimated_origin = crate::simulation::calculate_position_from_bearing_range(
+            current_position,
+            reverse_heading,
+            distance_traveled,
+        );
+
+        // Project forward to estimate target
+        let estimated_target = crate::simulation::calculate_position_from_bearing_range(
+            current_position,
+            heading,
+            distance_remaining,
+        );
+
+        // 3. Estimate apogee from current altitude and flight phase
+        // Parabola: h(t) = 4 * max_h * t * (1-t) => max_h = h(t) / (4 * t * (1-t))
+        let t = current_flight_progress_estimate;
+        let denominator = 4.0 * t * (1.0 - t);
+        let estimated_apogee = if denominator > 0.001 {
+            (current_altitude_km / denominator).clamp(current_altitude_km, current_altitude_km * 5.0)
+        } else {
+            // Near launch or impact, use range-based estimate
+            estimate_apogee(estimated_total_range_km)
+        };
+
+        // 4. Estimate total flight time from range
+        let estimated_flight_time = estimate_flight_time(estimated_total_range_km);
+
+        // 5. Calculate uncertainty based on velocity confidence
+        let origin_uncertainty = 50.0 * (1.0 - velocity.confidence);
+        let target_uncertainty = 50.0 * (1.0 - velocity.confidence);
+        let apogee_uncertainty = current_altitude_km * 0.3;
+
+        // 6. Construct trajectory with estimated parameters
+        Some(BallisticTrajectory {
+            origin: estimated_origin,
+            target: estimated_target,
+            range_km: estimated_total_range_km,
+            max_altitude_km: estimated_apogee,
+            flight_time_sec: estimated_flight_time,
+            origin_uncertainty_km: Some(origin_uncertainty),
+            target_uncertainty_km: Some(target_uncertainty),
+            apogee_uncertainty_km: Some(apogee_uncertainty),
+            is_sensor_derived: true,
+        })
+    }
+
+    /// Estimate current flight progress (0.0-1.0) from altitude and vertical rate
+    pub fn estimate_flight_progress_from_altitude(
+        altitude_km: f64,
+        vertical_rate_km_s: f64,
+        max_altitude_estimate: f64,
+    ) -> f64 {
+        // Parabola: h(t) = 4 * max_h * t * (1-t)
+        // Solve for t given h: t = 0.5 ± sqrt(0.25 - h / (4 * max_h))
+
+        let altitude_ratio = altitude_km / max_altitude_estimate.max(1.0);
+        if altitude_ratio >= 0.99 {
+            return 0.5; // At apogee
+        }
+
+        let discriminant = 0.25 - altitude_ratio / 4.0;
+        if discriminant < 0.0 {
+            return 0.5; // Math error, default to midcourse
+        }
+
+        let sqrt_term = discriminant.sqrt();
+
+        // Two solutions: ascending (t < 0.5) or descending (t > 0.5)
+        // Use vertical_rate sign to determine which
+        if vertical_rate_km_s >= 0.0 {
+            // Ascending - use smaller t
+            (0.5 - sqrt_term).max(0.0)
+        } else {
+            // Descending - use larger t
+            (0.5 + sqrt_term).min(1.0)
+        }
     }
 
     /// Determine flight phase based on progress
@@ -153,7 +268,7 @@ pub enum FlightPhase {
 }
 
 /// Estimate apogee (max altitude) based on range
-fn estimate_apogee(range_km: f64) -> f64 {
+pub fn estimate_apogee(range_km: f64) -> f64 {
     // Rough approximation based on typical ICBM profiles
     // Short range (< 1000km): ~150-300km apogee
     // Medium range (1000-3000km): ~300-800km apogee
@@ -165,6 +280,22 @@ fn estimate_apogee(range_km: f64) -> f64 {
         150.0 + range_km * 0.2  // Medium range
     } else {
         600.0 + range_km * 0.1  // ICBMs
+    }
+}
+
+/// Estimate range from apogee (inverse of estimate_apogee)
+/// Used for trajectory reconstruction from sensor data
+pub fn estimate_range_from_apogee(apogee_km: f64) -> f64 {
+    // Inverse the piecewise function from estimate_apogee()
+    if apogee_km < 150.0 {
+        // range * 0.3 = apogee => range = apogee / 0.3
+        apogee_km / 0.3
+    } else if apogee_km < 750.0 {
+        // 150 + range * 0.2 = apogee => range = (apogee - 150) / 0.2
+        (apogee_km - 150.0) / 0.2
+    } else {
+        // 600 + range * 0.1 = apogee => range = (apogee - 600) / 0.1
+        (apogee_km - 600.0) / 0.1
     }
 }
 

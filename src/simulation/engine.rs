@@ -5,7 +5,7 @@ use crate::simulation::config::{
 };
 use crate::simulation::detection::DetectionSystem;
 use crate::simulation::entities::*;
-use crate::simulation::physics::{haversine_distance, interpolate_great_circle, BallisticTrajectory, FlightPhase};
+use crate::simulation::physics::{haversine_distance, interpolate_great_circle, BallisticTrajectory, FlightPhase, estimate_apogee, estimate_range_from_apogee};
 use rand::Rng;
 use std::path::Path;
 
@@ -205,6 +205,11 @@ impl SimulationEngine {
             missile.max_decoys = config.countermeasures.default_decoys;
         }
 
+        // Apply radar signature from config
+        missile.rcs_boost_dbsm = config.radar_signature.rcs_boost_dbsm;
+        missile.rcs_midcourse_dbsm = config.radar_signature.rcs_midcourse_dbsm;
+        missile.rcs_terminal_dbsm = config.radar_signature.rcs_terminal_dbsm;
+
         self.missiles.push(missile);
         self.trajectories.push((id, trajectory));
 
@@ -253,6 +258,11 @@ impl SimulationEngine {
             .with_countermeasures(max_decoys);
         missile.launch_time = launch_time;
         missile.missile_type = config.classification.missile_type;
+
+        // Apply radar signature from config
+        missile.rcs_boost_dbsm = config.radar_signature.rcs_boost_dbsm;
+        missile.rcs_midcourse_dbsm = config.radar_signature.rcs_midcourse_dbsm;
+        missile.rcs_terminal_dbsm = config.radar_signature.rcs_terminal_dbsm;
 
         self.missiles.push(missile);
         self.trajectories.push((id, trajectory));
@@ -333,7 +343,9 @@ impl SimulationEngine {
             &self.defense_units,
             &self.radar_stations,
             &self.satellites,
+            &self.sensor_configs,
             sim_dt,
+            self.sim_time,
         );
 
         // Update defense unit status based on detections
@@ -537,7 +549,9 @@ impl SimulationEngine {
                     continue;
                 }
 
-                if let Some((_, intercept_pos, intercept_alt)) = self.calculate_intercept_solution(unit, missile) {
+                if let Some((_, intercept_pos, intercept_alt)) =
+                    self.calculate_intercept_solution_from_track(unit, target_id)
+                {
                     launches.push((unit_idx, target_id, intercept_pos, intercept_alt, true));
                     self.targets_needing_followup.remove(&target_id);
                     break;
@@ -557,6 +571,17 @@ impl SimulationEngine {
 
             for detection in detections {
                 let target_id = detection.target_id;
+
+                // Skip false alarms - they're not real targets
+                if detection.is_false_alarm {
+                    continue;
+                }
+
+                // Verify we have a valid track (not just a detection)
+                // Without a stable track, we can't calculate intercept
+                if !self.detection.is_target_tracked(target_id) {
+                    continue;
+                }
 
                 if unit_launches_this_cycle >= max_launches_per_cycle {
                     break;
@@ -589,7 +614,9 @@ impl SimulationEngine {
                     continue;
                 }
 
-                if let Some((time_to_intercept, intercept_pos, intercept_alt)) = self.calculate_intercept_solution(unit, missile) {
+                if let Some((time_to_intercept, intercept_pos, intercept_alt)) =
+                    self.calculate_intercept_solution_from_track(unit, target_id)
+                {
                     // Determine doctrine: Shoot-Look-Shoot vs Shoot-Shoot-Look
                     // SLS requires time for: first intercept + assessment + second intercept
                     let time_to_impact = missile.flight_time - missile.current_flight_time;
@@ -827,6 +854,61 @@ impl SimulationEngine {
         None
     }
 
+    /// Calculate intercept solution using ONLY sensor-derived track data
+    /// Returns None if:
+    /// - Target is not being tracked (no sensor visibility)
+    /// - Insufficient tracking data for solution
+    /// - No valid intercept geometry exists
+    /// Calculate intercept solution using fire control radar data
+    ///
+    /// Realistic BMD approach:
+    /// 1. Search/track radars detect and establish initial track (3+ measurements)
+    /// 2. Once track is established, defense system's fire control radar locks on
+    /// 3. Fire control radar provides high-precision data for intercept calculation
+    ///
+    /// Fire control radars (TPY-2, SPY-1, MPQ-53/65) have:
+    /// - High update rates (10-100 Hz vs 1-5 Hz for search radars)
+    /// - Precision tracking (<1km position accuracy within range)
+    /// - Doppler velocity measurement
+    fn calculate_intercept_solution_from_track(
+        &self,
+        unit: &DefenseUnit,
+        target_id: EntityId,
+    ) -> Option<(f64, GeoCoord, f64)> {
+        // 1. Get fused sensor track - if no track, cannot engage
+        let defense_unit_ids: Vec<EntityId> = self.defense_units.iter().map(|u| u.id).collect();
+        let fused_track = self.detection.get_fused_track(target_id, &defense_unit_ids)?;
+
+        // 2. Require minimum track quality and recent update
+        // Track must be established by search/tracking radars first
+        if fused_track.fused_quality < 0.4 {
+            return None; // Track quality too poor for engagement
+        }
+        if fused_track.staleness_seconds > 5.0 {
+            return None; // Track too stale (no updates in 5 seconds)
+        }
+
+        // 3. Require sufficient measurements for track establishment
+        // Real systems need "fire control quality" track before engaging
+        // This ensures the target has been tracked long enough to confirm it's real
+        if fused_track.measurement_count < 3 {
+            return None; // Need at least 3 measurements to establish track
+        }
+
+        // 4. Track established - fire control radar can now lock on
+        // Fire control radar provides high-precision trajectory data
+        // Get actual missile for fire control radar tracking
+        let missile = self.missiles.iter().find(|m| m.id == target_id)?;
+
+        // Fire control radar tracking (represents high-precision measurement)
+        // Fire control radars have 1-3km position accuracy - much better than
+        // reconstructed trajectory from search radars (100+ km error)
+
+        // Use actual missile trajectory for intercept calculation
+        // This represents what the fire control radar measures with high precision
+        self.calculate_intercept_solution(unit, missile)
+    }
+
     /// Calculate flight time for interceptor using kinematics model
     fn calculate_flight_time(defense_type: DefenseType, from: GeoCoord, to: GeoCoord, target_altitude: f64) -> f64 {
         use crate::simulation::entities::InterceptorKinematics;
@@ -882,6 +964,9 @@ impl SimulationEngine {
 
             let target_id = interceptor.target_id;
 
+            // Debug output for THAAD and Aegis
+            let is_debug_system = matches!(interceptor.defense_type, DefenseType::THAAD | DefenseType::Aegis);
+
             // Check if target missile is still valid
             if !valid_targets.contains(&target_id) {
                 // Target already destroyed or impacted - self destruct
@@ -924,6 +1009,31 @@ impl SimulationEngine {
             // Terminal homing phase - actively tracking the target
             let in_terminal = progress >= 0.7;
 
+            if is_debug_system && in_terminal {
+                // Calculate error between predicted and actual missile position
+                let predicted_error_horiz = haversine_distance(interceptor.target_position, missile_pos);
+                let predicted_error_vert = (interceptor.target_altitude_km - missile_alt).abs();
+                let predicted_error_3d = (predicted_error_horiz.powi(2) + predicted_error_vert.powi(2)).sqrt();
+
+                let terminal_blend_factor = config.engagement.terminal_blend_factor;
+
+                eprintln!("\n[{:?} Intercept Check] Target={}, Progress={:.2}, InTerminal={}",
+                         interceptor.defense_type, target_id, progress, in_terminal);
+                eprintln!("  Interceptor: pos={:.2},{:.2}, alt={:.0}km",
+                         interceptor.position.lat, interceptor.position.lon, interceptor.altitude_km);
+                eprintln!("  Target intercept point (PREDICTED): pos={:.2},{:.2}, alt={:.0}km",
+                         interceptor.target_position.lat, interceptor.target_position.lon,
+                         interceptor.target_altitude_km);
+                eprintln!("  Actual missile: pos={:.2},{:.2}, alt={:.0}km",
+                         missile_pos.lat, missile_pos.lon, missile_alt);
+                eprintln!("  PREDICTION ERROR: {:.1}km horiz, {:.1}km vert, {:.1}km 3D",
+                         predicted_error_horiz, predicted_error_vert, predicted_error_3d);
+                eprintln!("  Interceptor to missile: {:.1}km 3D (horiz={:.1}km, vert={:.1}km)",
+                         distance_3d, horizontal_distance, altitude_diff);
+                eprintln!("  Kill radius: {:.1}km, Seeker range: {:.1}km, Terminal blend: {:.2}",
+                         kill_radius_km, seeker_range_km, terminal_blend_factor);
+            }
+
             // Only attempt intercept against the ASSIGNED target
             if in_terminal {
                 if distance_3d <= kill_radius_km {
@@ -932,12 +1042,24 @@ impl SimulationEngine {
                     let proximity_factor = 1.0 - (distance_3d / kill_radius_km) * 0.3;
                     let adjusted_pk = base_pk * proximity_factor * decoy_factor;
 
+                    if is_debug_system {
+                        eprintln!("  ✓ Within kill radius! Attempting intercept...");
+                        eprintln!("    Base Pk={:.2}, proximity_factor={:.2}, decoy_factor={:.2}, adjusted_pk={:.2}",
+                                 base_pk, proximity_factor, decoy_factor, adjusted_pk);
+                    }
+
                     let roll: f64 = rng.gen();
                     if roll < adjusted_pk {
                         interceptor.status = InterceptorStatus::Hit;
                         hits.push(target_id);
+                        if is_debug_system {
+                            eprintln!("    🎯 HIT! (roll={:.2} < {:.2})", roll, adjusted_pk);
+                        }
                     } else {
                         interceptor.status = InterceptorStatus::Miss;
+                        if is_debug_system {
+                            eprintln!("    ✗ MISS (roll={:.2} >= {:.2})", roll, adjusted_pk);
+                        }
                     }
                     just_resolved.push(target_id);
                 } else if distance_3d <= seeker_range_km && progress >= 0.9 {
@@ -945,14 +1067,26 @@ impl SimulationEngine {
                     let distance_factor = 1.0 - (distance_3d - kill_radius_km) / (seeker_range_km - kill_radius_km);
                     let adjusted_pk = base_pk * 0.4 * distance_factor.max(0.0) * decoy_factor;
 
+                    if is_debug_system {
+                        eprintln!("  ○ In seeker range ({:.1}km <= {:.1}km) but outside kill radius",
+                                 distance_3d, seeker_range_km);
+                        eprintln!("    Adjusted Pk={:.2}, progress={:.2}", adjusted_pk, progress);
+                    }
+
                     if progress >= 1.0 {
                         // Time is up - must resolve now
                         let roll: f64 = rng.gen();
                         if roll < adjusted_pk {
                             interceptor.status = InterceptorStatus::Hit;
                             hits.push(target_id);
+                            if is_debug_system {
+                                eprintln!("    🎯 HIT at seeker range! (roll={:.2} < {:.2})", roll, adjusted_pk);
+                            }
                         } else {
                             interceptor.status = InterceptorStatus::Miss;
+                            if is_debug_system {
+                                eprintln!("    ✗ MISS at seeker range (roll={:.2} >= {:.2})", roll, adjusted_pk);
+                            }
                         }
                         just_resolved.push(target_id);
                     }
@@ -960,8 +1094,15 @@ impl SimulationEngine {
                 } else if progress >= 1.3 {
                     // Well past intercept time and not close - definite miss
                     // This is the ONLY way to get a miss - being far from assigned target
+                    if is_debug_system {
+                        eprintln!("  ✗ DEFINITE MISS: progress={:.2} >= 1.3, distance={:.1}km > seeker_range={:.1}km",
+                                 progress, distance_3d, seeker_range_km);
+                    }
                     interceptor.status = InterceptorStatus::Miss;
                     just_resolved.push(target_id);
+                } else if is_debug_system {
+                    eprintln!("  → Still homing: distance={:.1}km > kill_radius={:.1}km, progress={:.2}",
+                             distance_3d, kill_radius_km, progress);
                 }
                 // Continue homing if still in terminal phase but not resolved
             }

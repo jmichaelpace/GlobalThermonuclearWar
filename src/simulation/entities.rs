@@ -51,7 +51,7 @@ impl DefenseType {
     pub fn detection_range_km(&self) -> f64 {
         match self {
             DefenseType::Patriot => 150.0,
-            DefenseType::THAAD => 200.0,
+            DefenseType::THAAD => 1000.0,  // AN/TPY-2 radar in forward mode: ~1000km
             DefenseType::Aegis => 500.0,
             DefenseType::GBI => 2000.0,
             DefenseType::S400 => 400.0,
@@ -163,6 +163,12 @@ pub struct Missile {
     pub decoys_deployed: u32,
     /// Maximum number of decoys
     pub max_decoys: u32,
+    /// Radar cross-section during boost phase (dBsm)
+    pub rcs_boost_dbsm: f64,
+    /// Radar cross-section during midcourse phase (dBsm)
+    pub rcs_midcourse_dbsm: f64,
+    /// Radar cross-section during terminal phase (dBsm)
+    pub rcs_terminal_dbsm: f64,
 }
 
 impl Missile {
@@ -190,6 +196,9 @@ impl Missile {
             has_countermeasures: false,
             decoys_deployed: 0,
             max_decoys: 0,
+            rcs_boost_dbsm: 5.0,      // Default: large due to exhaust plume
+            rcs_midcourse_dbsm: -5.0, // Default: small RV in space
+            rcs_terminal_dbsm: -10.0, // Default: smallest signature
         }
     }
 
@@ -229,6 +238,16 @@ impl Missile {
         }
         (self.current_flight_time / self.flight_time).clamp(0.0, 1.0)
     }
+
+    /// Get current radar cross-section based on flight phase (dBsm)
+    pub fn current_rcs_dbsm(&self) -> f64 {
+        match self.status {
+            MissileStatus::Boost => self.rcs_boost_dbsm,
+            MissileStatus::Midcourse => self.rcs_midcourse_dbsm,
+            MissileStatus::Terminal => self.rcs_terminal_dbsm,
+            _ => self.rcs_midcourse_dbsm, // Default for PreLaunch, Destroyed, Intercepted
+        }
+    }
 }
 
 /// A missile defense unit
@@ -243,6 +262,8 @@ pub struct DefenseUnit {
     pub interceptors_remaining: u32,
     pub max_interceptors: u32,
     pub sensor_type: SensorType,
+    /// Name of sensor configuration to use (maps to SensorConfigRegistry)
+    pub sensor_config_name: String,
 }
 
 impl DefenseUnit {
@@ -254,6 +275,8 @@ impl DefenseUnit {
         defense_type: DefenseType,
         interceptors: u32,
     ) -> Self {
+        // Default sensor config name based on defense type
+        let sensor_config_name = defense_type.name().to_lowercase().replace(' ', "_");
         Self {
             id,
             name,
@@ -264,6 +287,7 @@ impl DefenseUnit {
             interceptors_remaining: interceptors,
             max_interceptors: interceptors,
             sensor_type: SensorType::Radar,
+            sensor_config_name,
         }
     }
 
@@ -328,9 +352,12 @@ pub struct RadarStation {
     pub position: GeoCoord,
     pub detection_range_km: f64,
     pub azimuth_coverage_deg: f64,  // How wide the radar scans (360 for full coverage)
+    pub facing_deg: f64,            // Direction the radar faces (0 = North, 90 = East)
     pub elevation_min_deg: f64,
     pub elevation_max_deg: f64,
     pub sensor_type: SensorType,
+    /// Name of sensor configuration to use (maps to SensorConfigRegistry)
+    pub sensor_config_name: String,
 }
 
 impl RadarStation {
@@ -341,6 +368,8 @@ impl RadarStation {
         position: GeoCoord,
         detection_range_km: f64,
     ) -> Self {
+        // Normalize name for config lookup
+        let sensor_config_name = name.to_lowercase().replace([' ', '-'], "_");
         Self {
             id,
             name,
@@ -348,9 +377,35 @@ impl RadarStation {
             position,
             detection_range_km,
             azimuth_coverage_deg: 360.0,
+            facing_deg: 0.0, // Default: facing North
             elevation_min_deg: 3.0,
             elevation_max_deg: 85.0,
             sensor_type: SensorType::Radar,
+            sensor_config_name,
+        }
+    }
+
+    /// Create a radar station facing a specific direction
+    pub fn with_facing(mut self, facing_deg: f64) -> Self {
+        self.facing_deg = facing_deg;
+        self
+    }
+
+    /// Check if a bearing is within the radar's azimuth coverage
+    pub fn is_bearing_in_coverage(&self, bearing_deg: f64) -> bool {
+        if self.azimuth_coverage_deg >= 360.0 {
+            return true;
+        }
+
+        let half_coverage = self.azimuth_coverage_deg / 2.0;
+        let min_bearing = (self.facing_deg - half_coverage).rem_euclid(360.0);
+        let max_bearing = (self.facing_deg + half_coverage).rem_euclid(360.0);
+
+        if min_bearing <= max_bearing {
+            bearing_deg >= min_bearing && bearing_deg <= max_bearing
+        } else {
+            // Coverage wraps around 0/360
+            bearing_deg >= min_bearing || bearing_deg <= max_bearing
         }
     }
 }

@@ -8,6 +8,7 @@ detection_range_km = 800.0
 azimuth_coverage_deg = 120.0
 elevation_min_deg = 0.0
 elevation_max_deg = 70.0
+radar_band = "L"  # L-band (1.2-1.4 GHz) - long range, low attenuation
 
 [tracking]
 max_simultaneous_tracks = 30
