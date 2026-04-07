@@ -47,34 +47,6 @@ pub enum DefenseType {
 }
 
 impl DefenseType {
-    /// Detection range in kilometers
-    pub fn detection_range_km(&self) -> f64 {
-        match self {
-            DefenseType::Patriot => 150.0,
-            DefenseType::THAAD => 1000.0,  // AN/TPY-2 radar in forward mode: ~1000km
-            DefenseType::Aegis => 500.0,
-            DefenseType::GBI => 2000.0,
-            DefenseType::S400 => 400.0,
-            DefenseType::IronDome => 70.0,
-            DefenseType::DavidsSling => 160.0,  // Mid-tier detection
-            DefenseType::Arrow3 => 400.0,        // Long-range detection
-        }
-    }
-
-    /// Engagement range in kilometers
-    pub fn engagement_range_km(&self) -> f64 {
-        match self {
-            DefenseType::Patriot => 70.0,         // PAC-3 MSE range ~70km
-            DefenseType::THAAD => 200.0,          // THAAD ~200km
-            DefenseType::Aegis => 500.0,          // SM-3 ~500km+ (matches detection)
-            DefenseType::GBI => 2000.0,           // GBI intercontinental range
-            DefenseType::S400 => 400.0,           // S-400 ~400km
-            DefenseType::IronDome => 70.0,        // Iron Dome ~70km
-            DefenseType::DavidsSling => 160.0,    // David's Sling ~160km
-            DefenseType::Arrow3 => 400.0,         // Arrow 3 exo-atmospheric ~400km
-        }
-    }
-
     /// Display name
     pub fn name(&self) -> &'static str {
         match self {
@@ -87,50 +59,6 @@ impl DefenseType {
             DefenseType::DavidsSling => "David's Sling",
             DefenseType::Arrow3 => "Arrow 3",
         }
-    }
-
-    /// Minimum engagement altitude in km (based on published capabilities)
-    pub fn min_engagement_altitude_km(&self) -> f64 {
-        match self {
-            // Terminal phase systems (endo-atmospheric)
-            DefenseType::Patriot => 0.5,       // PAC-3 MSE: 0.5-40 km
-            DefenseType::IronDome => 0.0,      // Tamir: very low altitude rockets
-            DefenseType::S400 => 0.01,         // 40N6: 10m - 185km
-
-            // Upper-tier terminal (endo/exo transition)
-            DefenseType::DavidsSling => 15.0,  // Stunner: 15-70+ km (upper endo)
-            DefenseType::THAAD => 40.0,        // THAAD: 40-150 km (high endo/low exo)
-
-            // Midcourse/exoatmospheric
-            DefenseType::Aegis => 80.0,        // SM-3: 80-500+ km (exo-atmospheric)
-            DefenseType::Arrow3 => 50.0,       // Arrow 3: 50-100+ km (exo-atmospheric)
-            DefenseType::GBI => 200.0,         // GBI: 200-2000 km (deep space midcourse)
-        }
-    }
-
-    /// Maximum engagement altitude in km (based on published capabilities)
-    pub fn max_engagement_altitude_km(&self) -> f64 {
-        match self {
-            // Terminal phase systems
-            DefenseType::Patriot => 40.0,      // PAC-3 MSE: up to 40 km
-            DefenseType::IronDome => 10.0,     // Tamir: up to 10 km
-            DefenseType::S400 => 185.0,        // 40N6: up to 185 km
-
-            // Upper-tier terminal
-            DefenseType::DavidsSling => 70.0,  // Stunner: up to ~70 km
-            DefenseType::THAAD => 150.0,       // THAAD: up to 150 km
-
-            // Midcourse/exoatmospheric
-            DefenseType::Aegis => 600.0,       // SM-3 Block IIA: 500-600+ km
-            DefenseType::Arrow3 => 100.0,      // Arrow 3: ~100 km (designed for shorter range)
-            DefenseType::GBI => 2000.0,        // GBI: midcourse intercept at apogee
-        }
-    }
-
-    /// Check if this defense type can engage a target at the given altitude
-    pub fn can_engage_at_altitude(&self, altitude_km: f64) -> bool {
-        altitude_km >= self.min_engagement_altitude_km()
-            && altitude_km <= self.max_engagement_altitude_km()
     }
 }
 
@@ -289,14 +217,6 @@ impl DefenseUnit {
             sensor_type: SensorType::Radar,
             sensor_config_name,
         }
-    }
-
-    pub fn detection_range_km(&self) -> f64 {
-        self.defense_type.detection_range_km()
-    }
-
-    pub fn engagement_range_km(&self) -> f64 {
-        self.defense_type.engagement_range_km()
     }
 }
 

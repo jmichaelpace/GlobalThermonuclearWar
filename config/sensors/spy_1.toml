@@ -1,16 +1,41 @@
+# System identification and metadata
 [system]
+# Official system designation
 name = "AN/SPY-1D"
+# Full system description and primary role
 description = "AEGIS phased array radar for ship-based BMD"
+# Operating country/nation
 country = "USA"
 
+# Detection and coverage parameters
 [detection]
+# Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
 detection_range_km = 500.0
+# Horizontal field of view (degrees) - how wide the radar can scan
 azimuth_coverage_deg = 360.0
+# Minimum elevation angle radar can scan (degrees above horizon)
 elevation_min_deg = 0.0
+# Maximum elevation angle radar can scan (degrees, 90 = straight up)
 elevation_max_deg = 90.0
+# Radar frequency band - affects range, resolution, and atmospheric attenuation
 radar_band = "S"  # S-band (3 GHz) - good range, lower attenuation
+# Radar scanning mechanism type - phased_array supports multi-mode operation
+radar_type = "phased_array"
+# Custom mode range multipliers (S-band wider beams, less concentration than X-band)
+track_range_multiplier = 1.8       # 1.8x base range in Track mode (vs default 2.0x)
+fire_control_range_multiplier = 2.5  # 2.5x base range in FireControl mode (vs default 3.0x)
 
+# Tracking and processing capabilities
 [tracking]
+# Maximum number of targets that can be tracked simultaneously
 max_simultaneous_tracks = 100
+# How many times per second the radar updates track data (Hz)
 track_update_rate_hz = 10.0
+# Minimum radar cross section detectable (dBsm, lower = can detect smaller targets)
 minimum_rcs_dbsm = -20.0
+# Maximum fire control tracks - number of targets that can receive terminal guidance simultaneously
+max_fire_control_tracks = 3
+# Beam dwell times (milliseconds) - SPY-1 has moderate beam steering speed
+search_dwell_time_ms = 25.0          # Moderate search scans
+track_dwell_time_ms = 120.0          # Standard tracking
+fire_control_dwell_time_ms = 600.0   # Terminal guidance with illumination

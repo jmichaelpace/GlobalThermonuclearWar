@@ -42,11 +42,34 @@ pub struct KinematicsConfig {
     pub average_speed_km_s: f64,
 }
 
+/// Interceptor guidance type
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GuidanceType {
+    /// Active homing - interceptor has onboard radar (SM-3, THAAD, Arrow-3)
+    #[serde(rename = "active")]
+    Active,
+    /// Semi-active homing - requires continuous radar illumination (SM-2, Patriot PAC-2, 40N6)
+    #[serde(rename = "semi_active")]
+    SemiActive,
+    /// Command guidance - radar provides steering commands (older systems)
+    #[serde(rename = "command")]
+    Command,
+}
+
+impl Default for GuidanceType {
+    fn default() -> Self {
+        GuidanceType::Active  // Default to active for backward compatibility
+    }
+}
+
 /// Engagement parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngagementConfig {
     pub hit_probability: f64,
     pub terminal_blend_factor: f64,
+    /// Guidance type - determines if continuous illumination is required
+    #[serde(default)]
+    pub guidance_type: GuidanceType,
 }
 
 /// Kill envelope parameters
@@ -55,369 +78,6 @@ pub struct KillEnvelopeConfig {
     pub seeker_range_km: f64,
     pub kill_radius_km: f64,
     pub base_pk: f64,
-}
-
-/// Complete defense system configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DefenseConfig {
-    pub system: SystemInfo,
-    pub detection: DetectionConfig,
-    pub altitude_envelope: AltitudeEnvelopeConfig,
-    pub kinematics: KinematicsConfig,
-    pub engagement: EngagementConfig,
-    pub kill_envelope: KillEnvelopeConfig,
-}
-
-/// Registry holding all defense configurations
-pub struct DefenseConfigRegistry {
-    configs: HashMap<DefenseType, DefenseConfig>,
-}
-
-impl DefenseConfigRegistry {
-    /// Load configurations from a directory
-    pub fn load(config_dir: &Path) -> Result<Self, ConfigError> {
-        let mut configs = HashMap::new();
-
-        let defense_types = [
-            (DefenseType::GBI, "gbi.toml"),
-            (DefenseType::Aegis, "aegis.toml"),
-            (DefenseType::THAAD, "thaad.toml"),
-            (DefenseType::Arrow3, "arrow3.toml"),
-            (DefenseType::DavidsSling, "davids_sling.toml"),
-            (DefenseType::Patriot, "patriot.toml"),
-            (DefenseType::S400, "s400.toml"),
-            (DefenseType::IronDome, "iron_dome.toml"),
-        ];
-
-        for (defense_type, filename) in defense_types {
-            let file_path = config_dir.join("platform").join(filename);
-
-            let config = if file_path.exists() {
-                match Self::load_config_file(&file_path) {
-                    Ok(cfg) => cfg,
-                    Err(e) => {
-                        eprintln!("Warning: Failed to load {}: {}, using defaults", filename, e);
-                        Self::default_config(defense_type)
-                    }
-                }
-            } else {
-                eprintln!("Warning: Config file {} not found, using defaults", filename);
-                Self::default_config(defense_type)
-            };
-
-            configs.insert(defense_type, config);
-        }
-
-        Ok(Self { configs })
-    }
-
-    /// Load a single config file
-    fn load_config_file(path: &Path) -> Result<DefenseConfig, ConfigError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-
-        toml::from_str(&contents)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))
-    }
-
-    /// Get configuration for a defense type
-    pub fn get(&self, defense_type: DefenseType) -> &DefenseConfig {
-        self.configs.get(&defense_type).unwrap_or_else(|| {
-            panic!("No config for defense type {:?}", defense_type)
-        })
-    }
-
-    /// Create default configuration using hardcoded values
-    pub fn default_config(defense_type: DefenseType) -> DefenseConfig {
-        match defense_type {
-            DefenseType::GBI => DefenseConfig {
-                system: SystemInfo {
-                    name: "GBI".to_string(),
-                    description: "Ground-Based Interceptor - midcourse defense".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 2000.0,
-                    engagement_range_km: 2000.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 200.0,
-                    max_engagement_altitude_km: 2000.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 170.0,
-                    boost_acceleration_g: 5.0,
-                    max_velocity_km_s: 8.0,
-                    terminal_maneuver_g: 20.0,
-                    burnout_altitude_km: 200.0,
-                    average_speed_km_s: 7.0,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.56,
-                    terminal_blend_factor: 0.15,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 100.0,
-                    kill_radius_km: 8.0,
-                    base_pk: 0.56,
-                },
-            },
-            DefenseType::Aegis => DefenseConfig {
-                system: SystemInfo {
-                    name: "Aegis BMD".to_string(),
-                    description: "SM-3 Block IIA ship-based exoatmospheric".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 500.0,
-                    engagement_range_km: 500.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 80.0,
-                    max_engagement_altitude_km: 600.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 30.0,
-                    boost_acceleration_g: 15.0,
-                    max_velocity_km_s: 4.5,
-                    terminal_maneuver_g: 25.0,
-                    burnout_altitude_km: 100.0,
-                    average_speed_km_s: 3.5,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.85,
-                    terminal_blend_factor: 0.15,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 80.0,
-                    kill_radius_km: 5.0,
-                    base_pk: 0.80,
-                },
-            },
-            DefenseType::THAAD => DefenseConfig {
-                system: SystemInfo {
-                    name: "THAAD".to_string(),
-                    description: "Terminal High Altitude Area Defense".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 200.0,
-                    engagement_range_km: 200.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 40.0,
-                    max_engagement_altitude_km: 150.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 12.0,
-                    boost_acceleration_g: 20.0,
-                    max_velocity_km_s: 2.8,
-                    terminal_maneuver_g: 30.0,
-                    burnout_altitude_km: 40.0,
-                    average_speed_km_s: 2.5,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.80,
-                    terminal_blend_factor: 0.40,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 50.0,
-                    kill_radius_km: 3.0,
-                    base_pk: 0.90,
-                },
-            },
-            DefenseType::Arrow3 => DefenseConfig {
-                system: SystemInfo {
-                    name: "Arrow 3".to_string(),
-                    description: "Israeli exo-atmospheric interceptor".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 400.0,
-                    engagement_range_km: 400.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 50.0,
-                    max_engagement_altitude_km: 100.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 25.0,
-                    boost_acceleration_g: 12.0,
-                    max_velocity_km_s: 2.5,
-                    terminal_maneuver_g: 20.0,
-                    burnout_altitude_km: 50.0,
-                    average_speed_km_s: 2.5,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.80,
-                    terminal_blend_factor: 0.20,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 80.0,
-                    kill_radius_km: 5.0,
-                    base_pk: 0.80,
-                },
-            },
-            DefenseType::DavidsSling => DefenseConfig {
-                system: SystemInfo {
-                    name: "David's Sling".to_string(),
-                    description: "Israeli mid-tier defense with Stunner missile".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 160.0,
-                    engagement_range_km: 160.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 15.0,
-                    max_engagement_altitude_km: 70.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 10.0,
-                    boost_acceleration_g: 15.0,
-                    max_velocity_km_s: 2.0,
-                    terminal_maneuver_g: 40.0,
-                    burnout_altitude_km: 20.0,
-                    average_speed_km_s: 1.0,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.85,
-                    terminal_blend_factor: 0.50,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 40.0,
-                    kill_radius_km: 15.0,
-                    base_pk: 0.85,
-                },
-            },
-            DefenseType::Patriot => DefenseConfig {
-                system: SystemInfo {
-                    name: "Patriot".to_string(),
-                    description: "PAC-3 MSE terminal defense".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 150.0,
-                    engagement_range_km: 70.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 0.5,
-                    max_engagement_altitude_km: 40.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 8.0,
-                    boost_acceleration_g: 25.0,
-                    max_velocity_km_s: 1.7,
-                    terminal_maneuver_g: 50.0,
-                    burnout_altitude_km: 15.0,
-                    average_speed_km_s: 1.7,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.70,
-                    terminal_blend_factor: 0.60,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 30.0,
-                    kill_radius_km: 2.0,
-                    base_pk: 0.90,
-                },
-            },
-            DefenseType::S400 => DefenseConfig {
-                system: SystemInfo {
-                    name: "S-400".to_string(),
-                    description: "Russian long-range SAM with 40N6 missile".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 400.0,
-                    engagement_range_km: 400.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 0.01,
-                    max_engagement_altitude_km: 185.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 15.0,
-                    boost_acceleration_g: 18.0,
-                    max_velocity_km_s: 2.0,
-                    terminal_maneuver_g: 25.0,
-                    burnout_altitude_km: 30.0,
-                    average_speed_km_s: 2.0,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.75,
-                    terminal_blend_factor: 0.50,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 50.0,
-                    kill_radius_km: 20.0,
-                    base_pk: 0.80,
-                },
-            },
-            DefenseType::IronDome => DefenseConfig {
-                system: SystemInfo {
-                    name: "Iron Dome".to_string(),
-                    description: "Israeli short-range defense with Tamir missile".to_string(),
-                    country: None,
-                    nato_designation: None,
-                },
-                detection: DetectionConfig {
-                    detection_range_km: 70.0,
-                    engagement_range_km: 70.0,
-                },
-                altitude_envelope: AltitudeEnvelopeConfig {
-                    min_engagement_altitude_km: 0.0,
-                    max_engagement_altitude_km: 10.0,
-                },
-                kinematics: KinematicsConfig {
-                    boost_duration_sec: 3.0,
-                    boost_acceleration_g: 30.0,
-                    max_velocity_km_s: 0.7,
-                    terminal_maneuver_g: 35.0,
-                    burnout_altitude_km: 5.0,
-                    average_speed_km_s: 0.3,
-                },
-                engagement: EngagementConfig {
-                    hit_probability: 0.90,
-                    terminal_blend_factor: 0.70,
-                },
-                kill_envelope: KillEnvelopeConfig {
-                    seeker_range_km: 20.0,
-                    kill_radius_km: 10.0,
-                    base_pk: 0.90,
-                },
-            },
-        }
-    }
-
-    /// Create registry with all defaults (no file loading)
-    pub fn with_defaults() -> Self {
-        let mut configs = HashMap::new();
-
-        let defense_types = [
-            DefenseType::GBI,
-            DefenseType::Aegis,
-            DefenseType::THAAD,
-            DefenseType::Arrow3,
-            DefenseType::DavidsSling,
-            DefenseType::Patriot,
-            DefenseType::S400,
-            DefenseType::IronDome,
-        ];
-
-        for defense_type in defense_types {
-            configs.insert(defense_type, Self::default_config(defense_type));
-        }
-
-        Self { configs }
-    }
 }
 
 // ============================================================================
@@ -469,6 +129,34 @@ impl Default for RadarBand {
     }
 }
 
+/// Radar scanning mechanism type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RadarType {
+    #[serde(rename = "mechanical")]
+    Mechanical,     // Traditional rotating antenna
+    #[serde(rename = "phased_array")]
+    PhasedArray,    // Electronically steered beam
+}
+
+/// Radar operating modes with different characteristics
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RadarMode {
+    Search,       // Wide area surveillance
+    Track,        // Tracking specific targets
+    FireControl,  // Precision guidance for intercept
+}
+
+impl RadarMode {
+    /// Whether this mode uses slant range (true) or ground range (false)
+    pub fn uses_slant_range(&self) -> bool {
+        match self {
+            RadarMode::Search => false,       // Ground range for search
+            RadarMode::Track => true,         // Slant range for tracking
+            RadarMode::FireControl => true,   // Slant range for fire control
+        }
+    }
+}
+
 /// Sensor detection parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorDetectionConfig {
@@ -478,6 +166,32 @@ pub struct SensorDetectionConfig {
     pub elevation_max_deg: f64,
     #[serde(default)]
     pub radar_band: RadarBand,
+    pub radar_type: RadarType,
+    /// Track mode range multiplier (multiplier on base range when in Track mode)
+    #[serde(default = "default_track_multiplier")]
+    pub track_range_multiplier: f64,
+    /// FireControl mode range multiplier (multiplier on base range when in FireControl mode)
+    #[serde(default = "default_fc_multiplier")]
+    pub fire_control_range_multiplier: f64,
+}
+
+fn default_track_multiplier() -> f64 {
+    2.0  // Default 2× base range in Track mode
+}
+
+fn default_fc_multiplier() -> f64 {
+    3.0  // Default 3× base range in FireControl mode
+}
+
+impl SensorDetectionConfig {
+    /// Get range multiplier for the given radar mode
+    pub fn get_range_multiplier(&self, mode: RadarMode) -> f64 {
+        match mode {
+            RadarMode::Search => 1.0,  // Base range
+            RadarMode::Track => self.track_range_multiplier,
+            RadarMode::FireControl => self.fire_control_range_multiplier,
+        }
+    }
 }
 
 /// Sensor tracking parameters
@@ -486,6 +200,40 @@ pub struct SensorTrackingConfig {
     pub max_simultaneous_tracks: u32,
     pub track_update_rate_hz: f64,
     pub minimum_rcs_dbsm: f64,
+    #[serde(default = "default_max_fc_tracks")]
+    pub max_fire_control_tracks: u32,
+    #[serde(default = "default_search_dwell_ms")]
+    pub search_dwell_time_ms: f64,
+    #[serde(default = "default_track_dwell_ms")]
+    pub track_dwell_time_ms: f64,
+    #[serde(default = "default_fc_dwell_ms")]
+    pub fire_control_dwell_time_ms: f64,
+}
+
+fn default_max_fc_tracks() -> u32 {
+    2  // Conservative default for fire control tracks
+}
+
+fn default_search_dwell_ms() -> f64 {
+    20.0  // 20ms per target in search mode
+}
+
+fn default_track_dwell_ms() -> f64 {
+    100.0  // 100ms per target in track mode
+}
+
+fn default_fc_dwell_ms() -> f64 {
+    500.0  // 500ms per target in fire control mode
+}
+
+impl SensorTrackingConfig {
+    pub fn get_dwell_time_sec(&self, mode: RadarMode) -> f64 {
+        match mode {
+            RadarMode::Search => self.search_dwell_time_ms / 1000.0,
+            RadarMode::Track => self.track_dwell_time_ms / 1000.0,
+            RadarMode::FireControl => self.fire_control_dwell_time_ms / 1000.0,
+        }
+    }
 }
 
 /// Complete sensor configuration
@@ -579,11 +327,18 @@ impl SensorConfigRegistry {
                 elevation_min_deg: 0.0,
                 elevation_max_deg: 90.0,
                 radar_band: RadarBand::X,
+                radar_type: RadarType::Mechanical,
+                track_range_multiplier: 2.0,
+                fire_control_range_multiplier: 3.0,
             },
             tracking: SensorTrackingConfig {
                 max_simultaneous_tracks: 20,
                 track_update_rate_hz: 5.0,
                 minimum_rcs_dbsm: 0.0,
+                max_fire_control_tracks: 2,
+                search_dwell_time_ms: 20.0,
+                track_dwell_time_ms: 100.0,
+                fire_control_dwell_time_ms: 500.0,
             },
         }
     }
@@ -593,6 +348,143 @@ impl SensorConfigRegistry {
             configs: HashMap::new(),
             default_config: Self::hardcoded_default(),
         }
+    }
+}
+
+// ============================================================================
+// Platform Configuration
+// ============================================================================
+
+/// Launcher capabilities and magazine
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LauncherConfig {
+    /// Name of interceptor config to use (e.g., "THAAD Interceptor", "PAC-3 MSE")
+    pub interceptor_type: String,
+    /// Name of sensor config to use (e.g., "AN/TPY-2", "AN/MPQ-65")
+    pub sensor_config_name: String,
+    /// Maximum number of interceptors this platform can hold
+    pub max_interceptors: u32,
+    /// Time to reload magazine after depletion (minutes)
+    #[serde(default)]
+    pub reload_time_minutes: f64,
+    /// Maximum number of interceptors that can be launched simultaneously
+    #[serde(default = "default_max_salvo")]
+    pub max_salvo_size: u32,
+    /// Platform engagement range (may be limited by fire control quality, not just interceptor)
+    pub engagement_range_km: f64,
+}
+
+fn default_max_salvo() -> u32 {
+    2  // Conservative default
+}
+
+/// Complete platform/launcher configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformConfig {
+    pub system: SystemInfo,
+    pub launcher: LauncherConfig,
+}
+
+/// Registry holding all platform configurations
+pub struct PlatformConfigRegistry {
+    configs: HashMap<String, PlatformConfig>,
+    default_config: PlatformConfig,
+}
+
+impl PlatformConfigRegistry {
+    /// Load configurations from a directory
+    pub fn load(config_dir: &Path) -> Result<Self, ConfigError> {
+        let mut configs = HashMap::new();
+        let platform_dir = config_dir.join("platform");
+
+        // Load default config first
+        let default_path = platform_dir.join("default.toml");
+        let default_config = if default_path.exists() {
+            match Self::load_config_file(&default_path) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    eprintln!("Warning: Failed to load platform/default.toml: {}, using hardcoded defaults", e);
+                    Self::hardcoded_default()
+                }
+            }
+        } else {
+            eprintln!("Warning: platform/default.toml not found, using hardcoded defaults");
+            Self::hardcoded_default()
+        };
+
+        // Load all .toml files from platform directory
+        if let Ok(entries) = fs::read_dir(&platform_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "toml") {
+                    if path.file_name().map_or(false, |n| n == "default.toml") {
+                        continue;
+                    }
+
+                    match Self::load_config_file(&path) {
+                        Ok(cfg) => {
+                            let normalized_name = Self::normalize_name(&cfg.system.name);
+                            configs.insert(normalized_name, cfg);
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to load {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
+            configs,
+            default_config,
+        })
+    }
+
+    fn load_config_file(path: &Path) -> Result<PlatformConfig, ConfigError> {
+        let contents = fs::read_to_string(path)
+            .map_err(|e| ConfigError::IoError(format!("Failed to read {:?}: {}", path, e)))?;
+
+        toml::from_str(&contents)
+            .map_err(|e| ConfigError::ParseError(format!("Failed to parse {:?}: {}", path, e)))
+    }
+
+    fn normalize_name(name: &str) -> String {
+        name.to_lowercase().replace(' ', "_").replace('-', "_")
+    }
+
+    fn hardcoded_default() -> PlatformConfig {
+        PlatformConfig {
+            system: SystemInfo {
+                name: "Generic Platform".to_string(),
+                description: "Default platform configuration".to_string(),
+                country: None,
+                nato_designation: None,
+            },
+            launcher: LauncherConfig {
+                interceptor_type: "Default Interceptor".to_string(),
+                sensor_config_name: "default".to_string(),
+                max_interceptors: 8,
+                reload_time_minutes: 30.0,
+                max_salvo_size: 2,
+                engagement_range_km: 100.0,
+            },
+        }
+    }
+
+    pub fn with_defaults() -> Self {
+        Self {
+            configs: HashMap::new(),
+            default_config: Self::hardcoded_default(),
+        }
+    }
+
+    pub fn get_by_name(&self, platform_name: &str) -> &PlatformConfig {
+        let normalized = Self::normalize_name(platform_name);
+        self.configs.get(&normalized).unwrap_or(&self.default_config)
+    }
+
+    pub fn get_by_defense_type(&self, defense_type: DefenseType) -> &PlatformConfig {
+        self.get_by_name(defense_type.name())
     }
 }
 
@@ -702,6 +594,7 @@ impl InterceptorConfigRegistry {
             engagement: EngagementConfig {
                 hit_probability: 0.70,
                 terminal_blend_factor: 0.30,
+                guidance_type: GuidanceType::Active,
             },
             kill_envelope: KillEnvelopeConfig {
                 seeker_range_km: 30.0,

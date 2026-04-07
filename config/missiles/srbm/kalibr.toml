@@ -1,28 +1,49 @@
+# System identification and description
 [system]
+# Official missile designation
 name = "Kalibr"
+# Full system name and role
 description = "Russian cruise missile (subsonic)"
+# Operating country/nation
 country = "Russia"
+# NATO reporting name for the missile
 nato_designation = "SS-N-27 Sizzler"
 
+# Missile classification
 [classification]
+# Type: ICBM (Intercontinental), IRBM (Intermediate), MRBM (Medium), SRBM (Short), SLBM (Sub-launched)
 type = "SRBM"
 
+# Range capabilities
 [range]
+# Minimum operational range (km) - below this, targeting may be impractical
 min_range_km = 300.0
+# Maximum range at optimal trajectory (km)
 max_range_km = 2500.0
 
+# Ballistic trajectory parameters
 [trajectory]
-# Cruise missiles fly low, not ballistic arc
+# Base apogee altitude (km) - cruise missiles fly low, not ballistic arc
 apogee_base_km = 0.05
+# How much apogee increases per km of range (multiplier)
 apogee_range_factor = 0.0001
+# Base flight time (seconds) for minimum range shot
 flight_time_base_sec = 1200.0
+# How much flight time increases per km of range (multiplier)
 flight_time_range_factor = 0.8
 
+# Boost phase characteristics
 [boost]
+# Fraction of total flight time spent in powered boost phase (0.0-1.0)
 boost_phase_fraction = 0.02
+# Velocity at end of boost phase (km/s)
 boost_velocity_km_s = 0.25
 
+# Penetration aids and countermeasures
 [countermeasures]
+# Whether missile deploys decoys and chaff
 has_countermeasures = false
+# Number of decoys deployed in standard configuration
 default_decoys = 0
+# Maximum number of decoys that can be deployed
 max_decoys = 0

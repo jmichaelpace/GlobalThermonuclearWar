@@ -1,27 +1,49 @@
+# System identification and description
 [system]
+# Official missile designation
 name = "Hwasong-14"
+# Full system name and role
 description = "North Korean ICBM - intercontinental range"
+# Operating country/nation
 country = "DPRK"
+# NATO reporting name for the missile
 nato_designation = "KN-20"
 
+# Missile classification
 [classification]
+# Type: ICBM (Intercontinental), IRBM (Intermediate), MRBM (Medium), SRBM (Short), SLBM (Sub-launched)
 type = "ICBM"
 
+# Range capabilities
 [range]
+# Minimum operational range (km) - below this, targeting may be impractical
 min_range_km = 6700.0
+# Maximum range at optimal trajectory (km)
 max_range_km = 10400.0
 
+# Ballistic trajectory parameters
 [trajectory]
+# Base apogee altitude (km) - trajectory peak altitude for minimum range
 apogee_base_km = 700.0
+# How much apogee increases per km of range (multiplier)
 apogee_range_factor = 0.08
+# Base flight time (seconds) for minimum range shot
 flight_time_base_sec = 1000.0
+# How much flight time increases per km of range (multiplier)
 flight_time_range_factor = 0.1
 
+# Boost phase characteristics
 [boost]
+# Fraction of total flight time spent in powered boost phase (0.0-1.0)
 boost_phase_fraction = 0.09
+# Velocity at end of boost phase (km/s)
 boost_velocity_km_s = 6.5
 
+# Penetration aids and countermeasures
 [countermeasures]
+# Whether missile deploys decoys and chaff
 has_countermeasures = true
+# Number of decoys deployed in standard configuration
 default_decoys = 1
+# Maximum number of decoys that can be deployed
 max_decoys = 4

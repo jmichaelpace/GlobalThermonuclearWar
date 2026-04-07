@@ -4,9 +4,10 @@ use rand::Rng;
 
 use crate::map::GeoCoord;
 use crate::simulation::{
-    bearing, haversine_distance, Affiliation, DefenseUnit, EntityId, Missile, MissileStatus,
-    RadarStation, Satellite, SensorConfig, SensorConfigRegistry, SensorType,
+    bearing, haversine_distance, DefenseUnit, EntityId, Interceptor, InterceptorStatus, Missile,
+    MissileStatus, RadarStation, Satellite, SensorConfig, SensorConfigRegistry, SensorType,
 };
+use crate::simulation::config::{RadarMode, RadarType, SensorTrackingConfig};
 use crate::simulation::kalman::BallisticState;
 
 /// Detection event - a sensor detecting a threat
@@ -217,6 +218,54 @@ impl TrackingState {
     }
 }
 
+/// Per-sensor radar mode tracking state (phased arrays only)
+#[derive(Clone, Debug)]
+pub struct RadarModeState {
+    pub sensor_id: EntityId,
+    /// Map of target_id -> mode assignment for that target
+    pub target_modes: HashMap<EntityId, RadarMode>,
+    /// Debug statistics
+    pub stats: RadarModeStatistics,
+}
+
+/// Statistics for radar mode performance tracking
+#[derive(Clone, Debug)]
+pub struct RadarModeStatistics {
+    /// Total number of mode switches (any mode change for any target)
+    pub mode_switch_count: u32,
+    /// Total number of targets dropped due to capacity/time budget
+    pub targets_dropped_count: u32,
+    /// Last scan's time budget utilization (0.0-1.0, >1.0 means over budget)
+    pub last_time_budget_utilization: f64,
+    /// Number of targets in each mode during last scan
+    pub last_fc_count: u32,
+    pub last_track_count: u32,
+    pub last_search_count: u32,
+}
+
+impl Default for RadarModeStatistics {
+    fn default() -> Self {
+        Self {
+            mode_switch_count: 0,
+            targets_dropped_count: 0,
+            last_time_budget_utilization: 0.0,
+            last_fc_count: 0,
+            last_track_count: 0,
+            last_search_count: 0,
+        }
+    }
+}
+
+impl RadarModeState {
+    pub fn new(sensor_id: EntityId) -> Self {
+        Self {
+            sensor_id,
+            target_modes: HashMap::new(),
+            stats: RadarModeStatistics::default(),
+        }
+    }
+}
+
 /// A fused track combining detections from multiple sensors
 /// Used for rendering in Detected Track View mode
 #[derive(Clone, Debug)]
@@ -280,6 +329,8 @@ pub struct DetectionSystem {
     pub active_tracks: Vec<TrackingState>,
     /// Time since last scan for each sensor (for scan rate limiting)
     scan_accumulators: HashMap<EntityId, f64>,
+    /// Radar mode state per sensor (phased arrays only)
+    pub radar_mode_states: HashMap<EntityId, RadarModeState>,
 }
 
 impl Default for DetectionSystem {
@@ -294,6 +345,7 @@ impl DetectionSystem {
             active_detections: Vec::new(),
             active_tracks: Vec::new(),
             scan_accumulators: HashMap::new(),
+            radar_mode_states: HashMap::new(),
         }
     }
 
@@ -305,6 +357,7 @@ impl DetectionSystem {
         defense_units: &[DefenseUnit],
         radar_stations: &[RadarStation],
         satellites: &[Satellite],
+        interceptors: &[Interceptor],
         sensor_configs: &SensorConfigRegistry,
         dt: f64,
         current_sim_time: f64,
@@ -331,6 +384,17 @@ impl DetectionSystem {
             let config = sensor_configs.get_by_name(&unit.sensor_config_name);
             track_limits.insert(unit.id, config.tracking.max_simultaneous_tracks);
 
+            // Update radar modes for phased arrays BEFORE scanning
+            self.update_radar_modes(
+                unit.id,
+                unit.position,
+                config.tracking.max_simultaneous_tracks,
+                config.tracking.max_fire_control_tracks,
+                interceptors,
+                config.detection.radar_type,
+                &config.tracking,
+            );
+
             if self.should_scan(unit.id, config.tracking.track_update_rate_hz, dt) {
                 // Clear old detections for this sensor
                 self.active_detections.retain(|d| d.sensor_id != unit.id);
@@ -340,10 +404,21 @@ impl DetectionSystem {
                     if unit.affiliation == missile.affiliation {
                         continue;
                     }
-                    if let Some(detection) =
-                        Self::check_defense_unit_detection(unit, missile, config)
-                    {
-                        self.active_detections.push(detection);
+
+                    // Get mode assignment for this target
+                    let radar_mode = self
+                        .radar_mode_states
+                        .get(&unit.id)
+                        .and_then(|state| state.target_modes.get(&missile.id).map(|&mode| mode));
+
+                    // Only check detection if target is in mode assignments
+                    // (targets beyond capacity will have no mode assigned)
+                    if radar_mode.is_some() || config.detection.radar_type == RadarType::Mechanical {
+                        if let Some(detection) =
+                            Self::check_defense_unit_detection(unit, missile, config, radar_mode)
+                        {
+                            self.active_detections.push(detection);
+                        }
                     }
                 }
 
@@ -352,7 +427,7 @@ impl DetectionSystem {
                     unit.id,
                     SensorKind::DefenseUnitRadar,
                     unit.position,
-                    unit.detection_range_km(),
+                    config.detection.detection_range_km,
                     BASE_FALSE_ALARM_RATE,
                 );
                 self.active_detections.extend(false_alarms);
@@ -364,6 +439,17 @@ impl DetectionSystem {
             let config = sensor_configs.get_by_name(&station.sensor_config_name);
             track_limits.insert(station.id, config.tracking.max_simultaneous_tracks);
 
+            // Update radar modes for phased arrays BEFORE scanning
+            self.update_radar_modes(
+                station.id,
+                station.position,
+                config.tracking.max_simultaneous_tracks,
+                config.tracking.max_fire_control_tracks,
+                interceptors,
+                config.detection.radar_type,
+                &config.tracking,
+            );
+
             if self.should_scan(station.id, config.tracking.track_update_rate_hz, dt) {
                 // Clear old detections for this sensor
                 self.active_detections.retain(|d| d.sensor_id != station.id);
@@ -373,10 +459,21 @@ impl DetectionSystem {
                     if station.affiliation == missile.affiliation {
                         continue;
                     }
-                    if let Some(detection) =
-                        Self::check_radar_station_detection(station, missile, config)
-                    {
-                        self.active_detections.push(detection);
+
+                    // Get mode assignment for this target
+                    let radar_mode = self
+                        .radar_mode_states
+                        .get(&station.id)
+                        .and_then(|state| state.target_modes.get(&missile.id).map(|&mode| mode));
+
+                    // Only check detection if target is in mode assignments
+                    // (targets beyond capacity will have no mode assigned)
+                    if radar_mode.is_some() || config.detection.radar_type == RadarType::Mechanical {
+                        if let Some(detection) =
+                            Self::check_radar_station_detection(station, missile, config, radar_mode)
+                        {
+                            self.active_detections.push(detection);
+                        }
                     }
                 }
 
@@ -439,7 +536,7 @@ impl DetectionSystem {
     fn generate_false_alarms(
         sensor_id: EntityId,
         sensor_type: SensorKind,
-        sensor_position: GeoCoord,
+        _sensor_position: GeoCoord,
         detection_range_km: f64,
         false_alarm_rate: f64, // Probability per scan (0.0 to 1.0)
     ) -> Vec<Detection> {
@@ -483,22 +580,33 @@ impl DetectionSystem {
         unit: &DefenseUnit,
         missile: &Missile,
         config: &SensorConfig,
+        radar_mode: Option<RadarMode>,
     ) -> Option<Detection> {
-        let range_km = haversine_distance(unit.position, missile.position);
-        // Use the defense unit's built-in detection range (based on defense type)
-        // Config provides RCS sensitivity and tracking parameters
-        let detection_range = unit.detection_range_km();
+        // Determine effective mode (default to Search for mechanical radars)
+        let mode = radar_mode.unwrap_or(RadarMode::Search);
+
+        // Calculate effective range based on mode (using radar-specific multipliers if configured)
+        let base_range = config.detection.detection_range_km;
+        let effective_range = base_range * config.detection.get_range_multiplier(mode);
+
+        // Calculate range based on mode (slant vs ground)
+        let range_km = if mode.uses_slant_range() {
+            calculate_slant_range(unit.position, 0.0, missile.position, missile.altitude_km)
+        } else {
+            haversine_distance(unit.position, missile.position)
+        };
 
         // Early exit if way out of range
-        if range_km > detection_range * 1.5 {
+        if range_km > effective_range * 1.5 {
             return None;
         }
 
-        // Calculate bearing
+        // Calculate bearing (always use ground distance for bearing)
         let bearing = calculate_bearing(unit.position, missile.position);
 
         // Check altitude constraints (ground radars have horizon limits)
-        let horizon_angle = calculate_horizon_angle(range_km, missile.altitude_km);
+        let ground_range = haversine_distance(unit.position, missile.position);
+        let horizon_angle = calculate_horizon_angle(ground_range, missile.altitude_km);
         if horizon_angle < config.detection.elevation_min_deg.max(2.0) {
             return None;
         }
@@ -506,7 +614,7 @@ impl DetectionSystem {
         // Calculate detection probability using RCS and atmospheric factors
         let mut p_detect = calculate_detection_probability(
             range_km,
-            detection_range,
+            effective_range,  // Use effective range, not base range
             missile.current_rcs_dbsm(),
             config.tracking.minimum_rcs_dbsm,
             missile.altitude_km,
@@ -545,16 +653,28 @@ impl DetectionSystem {
         station: &RadarStation,
         missile: &Missile,
         config: &SensorConfig,
+        radar_mode: Option<RadarMode>,
     ) -> Option<Detection> {
-        let range_km = haversine_distance(station.position, missile.position);
-        let detection_range = config.detection.detection_range_km;
+        // Determine effective mode (default to Search for mechanical radars)
+        let mode = radar_mode.unwrap_or(RadarMode::Search);
+
+        // Calculate effective range based on mode (using radar-specific multipliers if configured)
+        let base_range = config.detection.detection_range_km;
+        let effective_range = base_range * config.detection.get_range_multiplier(mode);
+
+        // Calculate range based on mode (slant vs ground)
+        let range_km = if mode.uses_slant_range() {
+            calculate_slant_range(station.position, 0.0, missile.position, missile.altitude_km)
+        } else {
+            haversine_distance(station.position, missile.position)
+        };
 
         // Early exit if way out of range
-        if range_km > detection_range * 1.5 {
+        if range_km > effective_range * 1.5 {
             return None;
         }
 
-        // Calculate bearing
+        // Calculate bearing (always use ground distance for bearing)
         let bearing = calculate_bearing(station.position, missile.position);
 
         // Check if target is within radar's azimuth coverage
@@ -562,8 +682,9 @@ impl DetectionSystem {
             return None;
         }
 
-        // Check elevation constraints
-        let elevation = calculate_elevation_angle(range_km, missile.altitude_km);
+        // Check elevation constraints (use ground range for angles)
+        let ground_range = haversine_distance(station.position, missile.position);
+        let elevation = calculate_elevation_angle(ground_range, missile.altitude_km);
         if elevation < config.detection.elevation_min_deg
             || elevation > config.detection.elevation_max_deg
         {
@@ -571,7 +692,7 @@ impl DetectionSystem {
         }
 
         // Check horizon
-        let horizon_angle = calculate_horizon_angle(range_km, missile.altitude_km);
+        let horizon_angle = calculate_horizon_angle(ground_range, missile.altitude_km);
         if horizon_angle < config.detection.elevation_min_deg {
             return None;
         }
@@ -579,7 +700,7 @@ impl DetectionSystem {
         // Calculate detection probability using RCS and atmospheric factors
         let mut p_detect = calculate_detection_probability(
             range_km,
-            detection_range,
+            effective_range,  // Use effective range, not base range
             missile.current_rcs_dbsm(),
             config.tracking.minimum_rcs_dbsm,
             missile.altitude_km,
@@ -1080,6 +1201,238 @@ impl DetectionSystem {
 
         (base_uncertainty + staleness_factor) * multi_sensor_factor
     }
+
+    /// Calculate threat priority score for a tracked target
+    /// Higher score = higher threat (closer, faster, better track quality)
+    fn calculate_threat_score(
+        &self,
+        track: &TrackingState,
+        sensor_position: GeoCoord,
+        _sensor_id: EntityId,
+    ) -> f64 {
+        let mut score = 0.0;
+
+        // Factor 1: Range (closer = higher threat, inverse relationship)
+        if let Some(latest) = track.position_history.first() {
+            let range_km = haversine_distance(sensor_position, latest.position);
+            // Closer targets score higher: 1000km range = 1.0, 100km = 10.0
+            score += 1000.0 / range_km.max(10.0);
+        }
+
+        // Factor 2: Closing velocity (faster approach = higher threat)
+        if let Some(vel) = &track.estimated_velocity {
+            if let Some(latest) = track.position_history.first() {
+                // Calculate bearing from sensor to target
+                let target_bearing = calculate_bearing(sensor_position, latest.position);
+                // Velocity toward sensor: 0° difference = max closing, 180° = opening
+                let bearing_diff = (vel.heading_deg - target_bearing).abs();
+                let closing_factor = (180.0 - bearing_diff) / 180.0;  // 1.0 = directly approaching
+                let closing_speed = vel.ground_speed_km_s * closing_factor;
+                score += closing_speed.max(0.0) * 100.0;
+            }
+        }
+
+        // Factor 3: Track quality (confident tracks prioritized)
+        score += track.track_quality * 50.0;
+
+        // Factor 4: Velocity confidence (stable velocity = reliable threat assessment)
+        if let Some(vel) = &track.estimated_velocity {
+            score += vel.confidence * 30.0;
+        }
+
+        score
+    }
+
+    /// Determine what mode a radar should use for a specific target
+    fn determine_radar_mode(
+        &self,
+        _target_id: EntityId,
+        has_interceptors_inflight: bool,
+        track_quality: f64,
+    ) -> RadarMode {
+        // Priority 1: Fire control for targets with interceptors
+        if has_interceptors_inflight {
+            return RadarMode::FireControl;
+        }
+
+        // Priority 2: Track mode for established high-quality tracks
+        if track_quality >= 0.6 {
+            return RadarMode::Track;
+        }
+
+        // Default: Search mode
+        RadarMode::Search
+    }
+
+    /// Update radar mode assignments for a phased array sensor
+    /// Must be called BEFORE detection checks each frame
+    /// Enforces both count limits AND time budget constraints
+    fn update_radar_modes(
+        &mut self,
+        sensor_id: EntityId,
+        sensor_position: GeoCoord,
+        max_simultaneous_tracks: u32,
+        max_fire_control_tracks: u32,
+        interceptors: &[Interceptor],
+        radar_type: RadarType,
+        tracking_config: &SensorTrackingConfig,
+    ) {
+        use std::collections::HashSet;
+
+        // Only phased arrays support multi-mode
+        if radar_type != RadarType::PhasedArray {
+            return;
+        }
+
+        // Build set of targets with in-flight interceptors
+        let targets_with_interceptors: HashSet<EntityId> = interceptors
+            .iter()
+            .filter(|i| i.status == InterceptorStatus::InFlight)
+            .map(|i| i.target_id)
+            .collect();
+
+        // Get all tracks for this sensor
+        let sensor_tracks: Vec<&TrackingState> = self.active_tracks
+            .iter()
+            .filter(|t| t.tracker_id == sensor_id)
+            .collect();
+
+        // Calculate threat scores for priority sorting
+        let mut threats: Vec<(EntityId, f64, bool)> = sensor_tracks
+            .iter()
+            .map(|track| {
+                let threat_score = self.calculate_threat_score(track, sensor_position, sensor_id);
+                let has_interceptor = targets_with_interceptors.contains(&track.target_id);
+                (track.target_id, threat_score, has_interceptor)
+            })
+            .collect();
+
+        // Sort by threat score descending (highest threat first)
+        threats.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Calculate time budget for this scan cycle (seconds)
+        let scan_period_sec = 1.0 / tracking_config.track_update_rate_hz.max(0.1);
+        let mut time_budget_remaining = scan_period_sec;
+
+        // Get or create mode state (AFTER all threat calculations to avoid borrow conflicts)
+        let mode_state = self.radar_mode_states
+            .entry(sensor_id)
+            .or_insert_with(|| RadarModeState::new(sensor_id));
+
+        // Store previous assignments for statistics tracking
+        let previous_modes = mode_state.target_modes.clone();
+
+        // Clear old assignments
+        mode_state.target_modes.clear();
+
+        // Track assignments by mode for debugging
+        let mut fc_count = 0;
+        let mut track_count = 0;
+        let mut search_count = 0;
+
+        // Assign modes based on priority, respecting BOTH count limits AND time budget
+        for (target_id, _, has_interceptor) in threats.iter() {
+            // Check total track limit
+            if mode_state.target_modes.len() >= max_simultaneous_tracks as usize {
+                break;  // Hard limit on total tracks
+            }
+
+            // Determine desired mode based on priority
+            let desired_mode = if *has_interceptor {
+                // Priority 1: Fire control for targets with interceptors
+                if fc_count >= max_fire_control_tracks {
+                    continue;  // FC capacity exhausted, skip this target
+                }
+                RadarMode::FireControl
+            } else {
+                // Priority 2/3: Track or Search based on quality
+                let track_quality = self.active_tracks
+                    .iter()
+                    .find(|t| t.target_id == *target_id && t.tracker_id == sensor_id)
+                    .map(|t| t.track_quality)
+                    .unwrap_or(0.0);
+
+                if track_quality >= 0.6 {
+                    RadarMode::Track
+                } else {
+                    RadarMode::Search
+                }
+            };
+
+            // Check if we have time budget for this mode
+            let dwell_time = tracking_config.get_dwell_time_sec(desired_mode);
+            if dwell_time > time_budget_remaining {
+                // Not enough time left - try degrading to lower mode
+                if desired_mode == RadarMode::Track {
+                    // Try Search instead
+                    let search_dwell = tracking_config.get_dwell_time_sec(RadarMode::Search);
+                    if search_dwell <= time_budget_remaining {
+                        // Can fit in Search mode
+                        mode_state.target_modes.insert(*target_id, RadarMode::Search);
+                        time_budget_remaining -= search_dwell;
+                        search_count += 1;
+                    }
+                    // else: can't fit at all, skip
+                } else if desired_mode == RadarMode::FireControl {
+                    // FireControl is critical - try to fit by degrading to Track
+                    let track_dwell = tracking_config.get_dwell_time_sec(RadarMode::Track);
+                    if track_dwell <= time_budget_remaining {
+                        mode_state.target_modes.insert(*target_id, RadarMode::Track);
+                        time_budget_remaining -= track_dwell;
+                        track_count += 1;
+                    } else {
+                        // Last resort: try Search
+                        let search_dwell = tracking_config.get_dwell_time_sec(RadarMode::Search);
+                        if search_dwell <= time_budget_remaining {
+                            mode_state.target_modes.insert(*target_id, RadarMode::Search);
+                            time_budget_remaining -= search_dwell;
+                            search_count += 1;
+                        }
+                    }
+                    // else: can't fit at all, critical target dropped!
+                }
+                // Search mode can't be degraded further - skip if no time
+            } else {
+                // Sufficient time budget - assign desired mode
+                mode_state.target_modes.insert(*target_id, desired_mode);
+                time_budget_remaining -= dwell_time;
+
+                match desired_mode {
+                    RadarMode::FireControl => fc_count += 1,
+                    RadarMode::Track => track_count += 1,
+                    RadarMode::Search => search_count += 1,
+                }
+            }
+        }
+
+        // Targets not in target_modes are dropped (beyond capacity or time budget)
+
+        // Update statistics
+        // Count dropped targets
+        let targets_assigned = mode_state.target_modes.len();
+        let targets_total = sensor_tracks.len();
+        let dropped_this_scan = targets_total.saturating_sub(targets_assigned);
+        mode_state.stats.targets_dropped_count = mode_state.stats.targets_dropped_count.saturating_add(dropped_this_scan as u32);
+
+        // Track mode switches
+        for (target_id, new_mode) in &mode_state.target_modes {
+            if let Some(&old_mode) = previous_modes.get(target_id) {
+                if old_mode != *new_mode {
+                    mode_state.stats.mode_switch_count += 1;
+                }
+            }
+        }
+
+        // Calculate time budget utilization
+        let total_budget = scan_period_sec;
+        let used_budget = total_budget - time_budget_remaining;
+        mode_state.stats.last_time_budget_utilization = used_budget / total_budget;
+
+        // Update mode counts
+        mode_state.stats.last_fc_count = fc_count;
+        mode_state.stats.last_track_count = track_count;
+        mode_state.stats.last_search_count = search_count;
+    }
 }
 
 /// Calculate bearing from one point to another (degrees, 0 = North)
@@ -1159,6 +1512,19 @@ fn calculate_atmospheric_attenuation(range_km: f64, target_altitude_km: f64, att
 
     // Convert to linear factor (0 dB = 1.0, -3 dB ≈ 0.5)
     10.0_f64.powf(-attenuation_db / 10.0).clamp(0.0, 1.0)
+}
+
+/// Calculate slant range (3D distance) between sensor and target
+/// slant_range = sqrt(ground_range² + altitude_diff²)
+pub fn calculate_slant_range(
+    sensor_pos: GeoCoord,
+    sensor_altitude_km: f64,
+    target_pos: GeoCoord,
+    target_altitude_km: f64,
+) -> f64 {
+    let ground_range = haversine_distance(sensor_pos, target_pos);
+    let altitude_diff = target_altitude_km - sensor_altitude_km;
+    (ground_range.powi(2) + altitude_diff.powi(2)).sqrt()
 }
 
 /// Calculate detection probability based on radar equation factors

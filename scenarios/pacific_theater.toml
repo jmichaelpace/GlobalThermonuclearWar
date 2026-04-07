@@ -65,14 +65,14 @@ name = "Cobra Dane"
 affiliation = "Friendly"
 lat = 52.7
 lon = 174.1
-range_km = 2500.0
+range_km = 3000.0
 
 [[radar_stations]]
-name = "Sea-Based X-Band"
+name = "SBX-1"
 affiliation = "Friendly"
 lat = 45.0
 lon = 170.0
-range_km = 2000.0
+range_km = 4000.0
 
 # Satellites
 [[satellites]]

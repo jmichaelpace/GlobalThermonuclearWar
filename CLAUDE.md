@@ -98,16 +98,10 @@ src/
 ### Real-World Fidelity
 This simulation models real-world missile defense systems and must maintain accuracy:
 
-- **Preserve equipment specifications**: Detection ranges, engagement ranges, interceptor counts, and sensor capabilities must match real-world published data
-- **Config files are authoritative**: Equipment specs in `config/` TOML files represent researched real-world values - do not modify without verification
-- **Defense system capabilities**:
-  - Patriot PAC-3: ~70km engagement range, terminal phase
-  - THAAD: ~200km, high endo/exo-atmospheric
-  - Aegis SM-3: ~500km, exo-atmospheric midcourse
-  - GBI: ~2000km, midcourse intercept
-  - Iron Dome: ~70km, short-range rockets
-  - Arrow 3: ~400km, exo-atmospheric
-  - S-400: ~400km, multi-layer
+- **Preserve equipment specifications**: Detection ranges, engagement ranges, interceptor counts, and sensor capabilities must match real-world published data.  Never modify configuration ranges or specifications in the /config files without asking first
+- **Config files are authoritative**: Equipment specs in `config/` TOML files represent researched real-world values.
+- **Defense system capabilities**: See configuration files in `config/platform/` for authoritative engagement ranges, altitude envelopes, and interceptor specifications for each defense system (Patriot, THAAD, Aegis, GBI, Iron Dome, Arrow 3, David's Sling, S-400)
+
 
 ### Physics and Detection
 - Radar detection follows inverse-square law (R⁴ for radar equation)
@@ -116,7 +110,9 @@ This simulation models real-world missile defense systems and must maintain accu
 - Ballistic trajectories use realistic apogee calculations based on range
 
 ### When Modifying Simulation Code
-1. Verify changes don't break detection/engagement range accuracy
-2. Test that defense systems engage appropriate threat types
-3. Ensure interceptors launch when threats are in engagement envelope
-4. Run the simulation with each scenario to verify expected behaviors
+1. Do not modify configuration items (Equipment specs) that have a TOML comment on the same line after the config setting
+2. Verify changes don't break detection/engagement range accuracy
+3. Test that defense systems engage appropriate threat types
+4. Ensure interceptors launch when threats are in engagement envelope
+5. Run the simulation with each scenario to verify expected behaviors
+6. Do not modify existing equipment files without asking first

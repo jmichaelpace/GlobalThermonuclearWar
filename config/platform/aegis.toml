@@ -1,28 +1,21 @@
+# System identification and description
 [system]
+# Official system designation
 name = "Aegis BMD"
+# Full system name and role
 description = "SM-3 Block IIA ship-based exoatmospheric"
 
-[detection]
-detection_range_km = 500.0
+# Launcher platform configuration
+[launcher]
+# Reference to interceptor configuration (by system name)
+interceptor_type = "SM-3 Block IIA"
+# Reference to sensor configuration (by system name)
+sensor_config_name = "AN/SPY-1D"
+# Maximum number of interceptors in VLS cells
+max_interceptors = 96
+# Time required to reload after depletion (minutes) - typically done in port
+reload_time_minutes = 1440.0
+# Maximum number of interceptors that can be launched in one salvo
+max_salvo_size = 2
+# Maximum range at which interceptors can be launched (km)
 engagement_range_km = 500.0
-
-[altitude_envelope]
-min_engagement_altitude_km = 80.0
-max_engagement_altitude_km = 600.0
-
-[kinematics]
-boost_duration_sec = 30.0
-boost_acceleration_g = 15.0
-max_velocity_km_s = 4.5
-terminal_maneuver_g = 25.0
-burnout_altitude_km = 100.0
-average_speed_km_s = 3.5
-
-[engagement]
-hit_probability = 0.85
-terminal_blend_factor = 0.15
-
-[kill_envelope]
-seeker_range_km = 80.0
-kill_radius_km = 5.0
-base_pk = 0.80

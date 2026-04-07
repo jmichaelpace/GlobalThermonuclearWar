@@ -2,10 +2,11 @@ use crate::map::{GeoCoord, GibsTileCache, GibsTileCoord, TileCache, Viewport};
 use crate::rendering::{DetectionOverlays, MilitarySymbols};
 use crate::scenario::{get_scenarios, ScenarioDefinition};
 use crate::simulation::{
-    bearing, calculate_position_from_bearing_range, haversine_distance, Affiliation,
+    bearing, calculate_position_from_bearing_range, Affiliation,
     BallisticTrajectory, DefenseUnit, EntityId, FusedTrack, Interceptor, Missile, MissileStatus,
-    RadarStation, Satellite, SensorKind, SensorType, SimulationEngine, TimeScale,
+    RadarStation, Satellite, SensorType, SimulationEngine, TimeScale,
 };
+use crate::simulation::config::{RadarMode, RadarType};
 use eframe::egui;
 use std::time::Instant;
 
@@ -35,6 +36,7 @@ pub enum TrackViewMode {
 }
 
 /// Globe view state
+#[allow(dead_code)]
 pub struct GlobeState {
     /// Center latitude of view (degrees)
     pub center_lat: f64,
@@ -320,6 +322,7 @@ pub struct App {
     show_trajectories: bool,
     show_tracking_lines: bool,
     show_scenario_panel: bool,
+    show_radar_stats: bool,
     selection: Option<Selection>,
     current_scenario: usize,
     event_log: EventLog,
@@ -364,9 +367,10 @@ impl App {
             last_update: Instant::now(),
             show_debug_info: false,
             show_detection_ranges: true,
-            show_trajectories: true,
+            show_trajectories: false,
             show_tracking_lines: true,
             show_scenario_panel: false,
+            show_radar_stats: false,
             selection: None,
             current_scenario: 4, // Demo scenario
             event_log: EventLog::new(),
@@ -378,7 +382,7 @@ impl App {
             view_mode: ViewMode::Map2D,
             globe_state: GlobeState::default(),
             gibs_tile_cache: GibsTileCache::new(),
-            track_view_mode: TrackViewMode::TrueTrack,
+            track_view_mode: TrackViewMode::DetectedTrack,
             show_false_alarms: true,
             scenarios, // Cache scenarios loaded at startup
         }
@@ -1231,8 +1235,8 @@ impl App {
         // Sample colors from the tile and draw as colored points on the globe
         // This is simpler than mesh rendering and works better with egui
         let texture_size = texture.size();
-        let tex_width = texture_size[0] as f32;
-        let tex_height = texture_size[1] as f32;
+        let _tex_width = texture_size[0] as f32;
+        let _tex_height = texture_size[1] as f32;
 
         // Create a mesh for the tile
         // Use fewer subdivisions for better performance (6x6 = 72 triangles per tile)
@@ -1755,32 +1759,110 @@ impl App {
     fn render_detection_ranges_globe(&self, painter: &egui::Painter, screen_center: egui::Pos2) {
         // Defense unit ranges
         for unit in &self.simulation.defense_units {
-            // Show actual max detection range (1.5× nominal for probabilistic detection)
-            let max_detection_range_km = unit.detection_range_km() * 1.5;
-            let engagement_range_km = unit.engagement_range_km();
+            let config = self.simulation.sensor_configs.get_by_name(&unit.sensor_config_name);
+            let base_range = config.detection.detection_range_km;
+            let platform_config = self.simulation.platform_configs.get_by_defense_type(unit.defense_type);
+            let engagement_range_km = platform_config.launcher.engagement_range_km;
 
-            let stroke_color = match unit.affiliation {
-                Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
-                Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 80, 80, 100),
-                Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(100, 255, 100, 100),
-            };
+            // Check if this is a phased array radar
+            if config.detection.radar_type == RadarType::PhasedArray {
+                // Draw three mode-specific ranges for phased arrays
 
+                // FireControl range (innermost, red/orange)
+                let fc_range = base_range * config.detection.get_range_multiplier(RadarMode::FireControl) * 1.5;
+                let fc_color = match unit.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
+                };
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    unit.position,
+                    fc_range,
+                    egui::Stroke::new(2.0, fc_color),
+                );
+
+                // Track range (middle, yellow)
+                let track_range = base_range * config.detection.get_range_multiplier(RadarMode::Track) * 1.5;
+                let track_color = match unit.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
+                };
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    unit.position,
+                    track_range,
+                    egui::Stroke::new(1.5, track_color),
+                );
+
+                // Search range (outermost, cyan/green)
+                let search_range = base_range * config.detection.get_range_multiplier(RadarMode::Search) * 1.5;
+                let search_color = match unit.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
+                };
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    unit.position,
+                    search_range,
+                    egui::Stroke::new(1.0, search_color),
+                );
+
+                // Draw mode capacity indicator
+                if let Some(screen_pos) = self.globe_state.geo_to_screen(unit.position, screen_center) {
+                    let mode_state = self.simulation.detection.radar_mode_states.get(&unit.id);
+                    if let Some(state) = mode_state {
+                        let fc_count = state.target_modes.values().filter(|&&m| m == RadarMode::FireControl).count();
+                        let track_count = state.target_modes.values().filter(|&&m| m == RadarMode::Track).count();
+                        let total_count = state.target_modes.len();
+
+                        let label = format!(
+                            "FC:{}/{} T:{} All:{}/{}",
+                            fc_count,
+                            config.tracking.max_fire_control_tracks,
+                            track_count,
+                            total_count,
+                            config.tracking.max_simultaneous_tracks
+                        );
+
+                        painter.text(
+                            screen_pos + egui::vec2(0.0, 20.0),
+                            egui::Align2::CENTER_TOP,
+                            label,
+                            egui::FontId::monospace(10.0),
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                        );
+                    }
+                }
+            } else {
+                // Mechanical radar - single range circle
+                let max_detection_range_km = base_range * 1.5;
+                let stroke_color = match unit.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 80, 80, 100),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(100, 255, 100, 100),
+                };
+
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    unit.position,
+                    max_detection_range_km,
+                    egui::Stroke::new(1.5, stroke_color),
+                );
+            }
+
+            // Draw engagement range circle (for all radars)
             let engagement_color = match unit.affiliation {
                 Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 255, 150, 80),
                 Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 80),
                 Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 80),
             };
-
-            // Draw detection range circle on globe
-            self.draw_range_circle_globe(
-                painter,
-                screen_center,
-                unit.position,
-                max_detection_range_km,
-                egui::Stroke::new(1.5, stroke_color),
-            );
-
-            // Draw engagement range circle on globe (slightly thicker)
             self.draw_range_circle_globe(
                 painter,
                 screen_center,
@@ -1792,22 +1874,101 @@ impl App {
 
         // Radar station detection ranges
         for station in &self.simulation.radar_stations {
-            let stroke_color = match station.affiliation {
-                Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 150, 100),
-                Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 100),
-                Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(220, 220, 100, 100),
-            };
+            let config = self.simulation.sensor_configs.get_by_name(&station.sensor_config_name);
+            let base_range = station.detection_range_km;
 
-            // Show actual max detection range (1.5× nominal for probabilistic detection)
-            let max_detection_range_km = station.detection_range_km * 1.5;
+            // Check if this is a phased array radar
+            if config.detection.radar_type == RadarType::PhasedArray {
+                // Draw three mode-specific ranges for phased arrays
 
-            self.draw_range_circle_globe(
-                painter,
-                screen_center,
-                station.position,
-                max_detection_range_km,
-                egui::Stroke::new(1.5, stroke_color),
-            );
+                // FireControl range (innermost, red/orange)
+                let fc_range = base_range * config.detection.get_range_multiplier(RadarMode::FireControl) * 1.5;
+                let fc_color = match station.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
+                };
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    station.position,
+                    fc_range,
+                    egui::Stroke::new(2.0, fc_color),
+                );
+
+                // Track range (middle, yellow)
+                let track_range = base_range * config.detection.get_range_multiplier(RadarMode::Track) * 1.5;
+                let track_color = match station.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
+                };
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    station.position,
+                    track_range,
+                    egui::Stroke::new(1.5, track_color),
+                );
+
+                // Search range (outermost, cyan/green)
+                let search_range = base_range * config.detection.get_range_multiplier(RadarMode::Search) * 1.5;
+                let search_color = match station.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
+                };
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    station.position,
+                    search_range,
+                    egui::Stroke::new(1.0, search_color),
+                );
+
+                // Draw mode capacity indicator
+                if let Some(screen_pos) = self.globe_state.geo_to_screen(station.position, screen_center) {
+                    let mode_state = self.simulation.detection.radar_mode_states.get(&station.id);
+                    if let Some(state) = mode_state {
+                        let fc_count = state.target_modes.values().filter(|&&m| m == RadarMode::FireControl).count();
+                        let track_count = state.target_modes.values().filter(|&&m| m == RadarMode::Track).count();
+                        let total_count = state.target_modes.len();
+
+                        let label = format!(
+                            "FC:{}/{} T:{} All:{}/{}",
+                            fc_count,
+                            config.tracking.max_fire_control_tracks,
+                            track_count,
+                            total_count,
+                            config.tracking.max_simultaneous_tracks
+                        );
+
+                        painter.text(
+                            screen_pos + egui::vec2(0.0, 20.0),
+                            egui::Align2::CENTER_TOP,
+                            label,
+                            egui::FontId::monospace(10.0),
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                        );
+                    }
+                }
+            } else {
+                // Mechanical radar - single range circle
+                let max_detection_range_km = base_range * 1.5;
+                let stroke_color = match station.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 150, 100),
+                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 100),
+                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(220, 220, 100, 100),
+                };
+
+                self.draw_range_circle_globe(
+                    painter,
+                    screen_center,
+                    station.position,
+                    max_detection_range_km,
+                    egui::Stroke::new(1.5, stroke_color),
+                );
+            }
         }
     }
 
@@ -2230,7 +2391,8 @@ impl App {
             let positions = self.viewport.geo_to_screen_wrapped(unit.position, screen_rect);
 
             // Show actual max detection range (1.5× nominal for probabilistic detection)
-            let max_range_km = unit.detection_range_km() * 1.5;
+            let sensor_config = self.simulation.sensor_configs.get_by_name(&unit.sensor_config_name);
+            let max_range_km = sensor_config.detection.detection_range_km * 1.5;
 
             // Convert km to screen pixels (approximate)
             let range_deg = max_range_km / 111.32;
@@ -2563,7 +2725,8 @@ impl App {
                 continue; // Can't intercept friendly missiles
             }
 
-            let engagement_range = unit.defense_type.engagement_range_km();
+            let platform_config = self.simulation.platform_configs.get_by_defense_type(unit.defense_type);
+            let engagement_range = platform_config.launcher.engagement_range_km;
 
             // Sample along the future trajectory to find intercept windows
             let progress = missile.flight_progress();
@@ -3041,7 +3204,7 @@ impl App {
         screen_rect: egui::Rect,
         interceptor: &Interceptor,
     ) {
-        use crate::simulation::{InterceptorStatus, InterceptorPhase, InterceptorKinematics};
+        use crate::simulation::InterceptorStatus;
 
         // Don't render pending interceptors (not launched yet)
         if interceptor.status == InterceptorStatus::Pending {
@@ -3064,7 +3227,7 @@ impl App {
 
         let color = match interceptor.status {
             InterceptorStatus::Pending => return, // Already handled above, but needed for exhaustive match
-            InterceptorStatus::InFlight => egui::Color32::from_rgb(255, 255, 0),   // Bright yellow for in-flight
+            InterceptorStatus::InFlight => egui::Color32::from_rgb(60, 120, 220),   // Dark blue for in-flight
             InterceptorStatus::Hit => egui::Color32::from_rgb(50, 255, 50),        // Bright green for hit
             InterceptorStatus::Miss => egui::Color32::from_rgb(255, 150, 50),      // Orange for miss
             InterceptorStatus::SelfDestruct => egui::Color32::from_rgb(150, 150, 150),
@@ -3185,10 +3348,10 @@ impl App {
                 let interceptor_screen = self.viewport.geo_to_screen(interceptor.position, screen_rect);
                 let target_screen = self.viewport.geo_to_screen(target_missile.position, screen_rect);
 
-                // Targeting line to target (bright yellow)
+                // Targeting line to target (dark blue)
                 painter.line_segment(
                     [interceptor_screen, target_screen],
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 200)),
+                    egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(60, 120, 220, 200)),
                 );
             }
         }
@@ -3259,7 +3422,7 @@ impl App {
 
             let (color, width) = match phase {
                 InterceptorPhase::Boost => (
-                    egui::Color32::from_rgba_unmultiplied(255, 180, 50, 180), // Orange - thrusting
+                    egui::Color32::from_rgba_unmultiplied(60, 120, 220, 180), // Dark blue - thrusting
                     2.5,
                 ),
                 InterceptorPhase::Coast => (
@@ -3665,7 +3828,7 @@ impl App {
                 ui.end_row();
 
                 ui.label("In Flight:");
-                ui.colored_label(egui::Color32::from_rgb(255, 255, 100), format!("{}", interceptors_in_flight));
+                ui.colored_label(egui::Color32::from_rgb(60, 120, 220), format!("{}", interceptors_in_flight));
                 ui.end_row();
 
                 ui.label("Hits:");
@@ -3952,11 +4115,13 @@ impl App {
                 ui.end_row();
 
                 ui.label("Detection Range:");
-                ui.label(format!("{:.0} km", unit.detection_range_km()));
+                let sensor_config = self.simulation.sensor_configs.get_by_name(&unit.sensor_config_name);
+                ui.label(format!("{:.0} km", sensor_config.detection.detection_range_km));
                 ui.end_row();
 
                 ui.label("Engagement Range:");
-                ui.label(format!("{:.0} km", unit.defense_type.engagement_range_km()));
+                let platform_config = self.simulation.platform_configs.get_by_defense_type(unit.defense_type);
+                ui.label(format!("{:.0} km", platform_config.launcher.engagement_range_km));
                 ui.end_row();
 
                 ui.label("Interceptors:");
@@ -4069,6 +4234,142 @@ impl App {
                 ui.end_row();
             });
     }
+
+    fn render_radar_stats_window(&self, ctx: &egui::Context) {
+        egui::Window::new("Radar Mode Statistics")
+            .default_pos([20.0, 100.0])
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.heading("Phased Array Radars");
+                ui.separator();
+
+                // Collect phased array radars with statistics
+                for unit in &self.simulation.defense_units {
+                    let config = self.simulation.sensor_configs.get_by_name(&unit.sensor_config_name);
+                    if config.detection.radar_type != RadarType::PhasedArray {
+                        continue;
+                    }
+
+                    if let Some(mode_state) = self.simulation.detection.radar_mode_states.get(&unit.id) {
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new(&unit.name).strong());
+
+                            ui.horizontal(|ui| {
+                                ui.label("Mode:");
+                                ui.label(format!(
+                                    "FC:{} T:{} S:{}",
+                                    mode_state.stats.last_fc_count,
+                                    mode_state.stats.last_track_count,
+                                    mode_state.stats.last_search_count
+                                ));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Capacity:");
+                                ui.label(format!(
+                                    "{}/{} ({:.0}%)",
+                                    mode_state.target_modes.len(),
+                                    config.tracking.max_simultaneous_tracks,
+                                    (mode_state.target_modes.len() as f64 / config.tracking.max_simultaneous_tracks as f64) * 100.0
+                                ));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Time Budget:");
+                                let util = mode_state.stats.last_time_budget_utilization;
+                                let color = if util > 0.95 {
+                                    egui::Color32::RED
+                                } else if util > 0.8 {
+                                    egui::Color32::YELLOW
+                                } else {
+                                    egui::Color32::GREEN
+                                };
+                                ui.colored_label(color, format!("{:.1}%", util * 100.0));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Mode Switches:");
+                                ui.label(format!("{}", mode_state.stats.mode_switch_count));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Targets Dropped:");
+                                let color = if mode_state.stats.targets_dropped_count > 0 {
+                                    egui::Color32::from_rgb(255, 150, 50)
+                                } else {
+                                    egui::Color32::GRAY
+                                };
+                                ui.colored_label(color, format!("{}", mode_state.stats.targets_dropped_count));
+                            });
+                        });
+                        ui.add_space(5.0);
+                    }
+                }
+
+                // Radar stations
+                for station in &self.simulation.radar_stations {
+                    let config = self.simulation.sensor_configs.get_by_name(&station.sensor_config_name);
+                    if config.detection.radar_type != RadarType::PhasedArray {
+                        continue;
+                    }
+
+                    if let Some(mode_state) = self.simulation.detection.radar_mode_states.get(&station.id) {
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new(&station.name).strong());
+
+                            ui.horizontal(|ui| {
+                                ui.label("Mode:");
+                                ui.label(format!(
+                                    "FC:{} T:{} S:{}",
+                                    mode_state.stats.last_fc_count,
+                                    mode_state.stats.last_track_count,
+                                    mode_state.stats.last_search_count
+                                ));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Capacity:");
+                                ui.label(format!(
+                                    "{}/{} ({:.0}%)",
+                                    mode_state.target_modes.len(),
+                                    config.tracking.max_simultaneous_tracks,
+                                    (mode_state.target_modes.len() as f64 / config.tracking.max_simultaneous_tracks as f64) * 100.0
+                                ));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Time Budget:");
+                                let util = mode_state.stats.last_time_budget_utilization;
+                                let color = if util > 0.95 {
+                                    egui::Color32::RED
+                                } else if util > 0.8 {
+                                    egui::Color32::YELLOW
+                                } else {
+                                    egui::Color32::GREEN
+                                };
+                                ui.colored_label(color, format!("{:.1}%", util * 100.0));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Mode Switches:");
+                                ui.label(format!("{}", mode_state.stats.mode_switch_count));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Targets Dropped:");
+                                let color = if mode_state.stats.targets_dropped_count > 0 {
+                                    egui::Color32::from_rgb(255, 150, 50)
+                                } else {
+                                    egui::Color32::GRAY
+                                };
+                                ui.colored_label(color, format!("{}", mode_state.stats.targets_dropped_count));
+                            });
+                        });
+                        ui.add_space(5.0);
+                    }
+                }
+            });
+    }
 }
 
 impl eframe::App for App {
@@ -4169,6 +4470,7 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.show_detection_ranges, "Ranges");
                 ui.checkbox(&mut self.show_trajectories, "Paths");
                 ui.checkbox(&mut self.show_tracking_lines, "Tracks");
+                ui.checkbox(&mut self.show_radar_stats, "Radar Stats");
 
                 ui.separator();
                 if ui.button("Reset View").clicked() {
@@ -4187,6 +4489,11 @@ impl eframe::App for App {
 
         // Info panel for selected entity (must be before CentralPanel)
         self.render_info_panel(ctx);
+
+        // Radar statistics window
+        if self.show_radar_stats {
+            self.render_radar_stats_window(ctx);
+        }
 
         // Main map panel
         egui::CentralPanel::default()

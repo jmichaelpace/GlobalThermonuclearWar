@@ -1,16 +1,41 @@
+# System identification and metadata
 [system]
+# Official system designation
 name = "AN/TPY-2"
+# Full system description and primary role
 description = "THAAD X-band radar for terminal phase tracking"
+# Operating country/nation
 country = "USA"
 
+# Detection and coverage parameters
 [detection]
+# Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
 detection_range_km = 1000.0
+# Horizontal field of view (degrees) - how wide the radar can scan
 azimuth_coverage_deg = 120.0
+# Minimum elevation angle radar can scan (degrees above horizon)
 elevation_min_deg = 0.0
+# Maximum elevation angle radar can scan (degrees, 90 = straight up)
 elevation_max_deg = 90.0
+# Radar frequency band - affects range, resolution, and atmospheric attenuation
 radar_band = "X"  # X-band - high resolution for terminal tracking
+# Radar scanning mechanism type - phased_array supports multi-mode operation
+radar_type = "phased_array"
+# Custom mode range multipliers (X-band narrow beams allow excellent concentration)
+track_range_multiplier = 2.5       # 2.5x base range in Track mode (vs default 2.0x)
+fire_control_range_multiplier = 4.0  # 4.0x base range in FireControl mode (vs default 3.0x)
 
+# Tracking and processing capabilities
 [tracking]
+# Maximum number of targets that can be tracked simultaneously
 max_simultaneous_tracks = 50
+# How many times per second the radar updates track data (Hz)
 track_update_rate_hz = 20.0
+# Minimum radar cross section detectable (dBsm, lower = can detect smaller targets)
 minimum_rcs_dbsm = -30.0
+# Maximum fire control tracks - number of targets that can receive terminal guidance simultaneously
+max_fire_control_tracks = 4
+# Beam dwell times (milliseconds) - TPY-2 has fast beam steering
+search_dwell_time_ms = 15.0          # Quick search scans
+track_dwell_time_ms = 80.0           # Efficient tracking
+fire_control_dwell_time_ms = 400.0   # Terminal guidance

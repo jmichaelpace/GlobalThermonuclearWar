@@ -1,32 +1,56 @@
+# System identification and description
 [system]
+# Official missile designation
 name = "Generic Ballistic Missile"
+# Full system name and role
 description = "Default configuration for unspecified missiles"
+# Operating country/nation
 country = "Unknown"
 
+# Missile classification
 [classification]
+# Type: ICBM (Intercontinental), IRBM (Intermediate), MRBM (Medium), SRBM (Short), SLBM (Sub-launched)
 type = "MRBM"
 
+# Range capabilities
 [range]
+# Minimum operational range (km) - below this, targeting may be impractical
 min_range_km = 500.0
+# Maximum range at optimal trajectory (km)
 max_range_km = 5000.0
 
+# Ballistic trajectory parameters
 [trajectory]
+# Base apogee altitude (km) - trajectory peak altitude for minimum range
 apogee_base_km = 150.0
+# How much apogee increases per km of range (multiplier)
 apogee_range_factor = 0.15
+# Base flight time (seconds) for minimum range shot
 flight_time_base_sec = 400.0
+# How much flight time increases per km of range (multiplier)
 flight_time_range_factor = 0.2
 
+# Boost phase characteristics
 [boost]
+# Fraction of total flight time spent in powered boost phase (0.0-1.0)
 boost_phase_fraction = 0.15
+# Velocity at end of boost phase (km/s)
 boost_velocity_km_s = 3.5
 
+# Penetration aids and countermeasures
 [countermeasures]
+# Whether missile deploys decoys and chaff
 has_countermeasures = false
+# Number of decoys deployed in standard configuration
 default_decoys = 0
+# Maximum number of decoys that can be deployed
 max_decoys = 3
 
+# Radar cross section by flight phase
 [radar_signature]
-# RCS values in dBsm (decibels relative to 1 square meter)
-rcs_boost_dbsm = 5.0       # Large during boost phase (exhaust plume)
-rcs_midcourse_dbsm = -5.0  # Small RV coasting in space
-rcs_terminal_dbsm = -10.0  # Smallest during terminal descent
+# RCS during boost phase (dBsm) - large due to exhaust plume
+rcs_boost_dbsm = 5.0
+# RCS during midcourse flight (dBsm) - small reentry vehicle in space
+rcs_midcourse_dbsm = -5.0
+# RCS during terminal descent (dBsm) - smallest during terminal descent
+rcs_terminal_dbsm = -10.0

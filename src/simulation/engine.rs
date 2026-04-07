@@ -1,11 +1,12 @@
 use crate::map::GeoCoord;
 use crate::simulation::config::{
-    DefenseConfigRegistry, MissileConfigRegistry, MissileType,
-    SensorConfigRegistry, InterceptorConfigRegistry, SatelliteConfigRegistry
+    MissileConfigRegistry, MissileType,
+    PlatformConfig, PlatformConfigRegistry, SensorConfigRegistry,
+    InterceptorConfig, InterceptorConfigRegistry, SatelliteConfigRegistry
 };
 use crate::simulation::detection::DetectionSystem;
 use crate::simulation::entities::*;
-use crate::simulation::physics::{haversine_distance, interpolate_great_circle, BallisticTrajectory, FlightPhase, estimate_apogee, estimate_range_from_apogee};
+use crate::simulation::physics::{haversine_distance, interpolate_great_circle, BallisticTrajectory, FlightPhase};
 use rand::Rng;
 use std::path::Path;
 
@@ -83,12 +84,12 @@ pub struct SimulationEngine {
     targets_needing_followup: std::collections::HashSet<EntityId>,
     /// Track total shots fired at each target (to enforce salvo_size limit)
     shots_fired_per_target: std::collections::HashMap<EntityId, u32>,
-    /// Defense system configurations loaded from TOML files
-    pub defense_configs: DefenseConfigRegistry,
     /// Missile configurations loaded from TOML files
     pub missile_configs: MissileConfigRegistry,
     /// Sensor configurations loaded from TOML files
     pub sensor_configs: SensorConfigRegistry,
+    /// Platform/launcher configurations loaded from TOML files
+    pub platform_configs: PlatformConfigRegistry,
     /// Interceptor configurations loaded from TOML files
     pub interceptor_configs: InterceptorConfigRegistry,
     /// Satellite configurations loaded from TOML files
@@ -98,12 +99,6 @@ pub struct SimulationEngine {
 impl SimulationEngine {
     pub fn new() -> Self {
         // Try to load configs from config directory, fall back to defaults
-        let defense_configs = DefenseConfigRegistry::load(Path::new("config"))
-            .unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to load defense configs: {}, using defaults", e);
-                DefenseConfigRegistry::with_defaults()
-            });
-
         let missile_configs = MissileConfigRegistry::load(Path::new("config"))
             .unwrap_or_else(|e| {
                 eprintln!("Warning: Failed to load missile configs: {}, using defaults", e);
@@ -114,6 +109,12 @@ impl SimulationEngine {
             .unwrap_or_else(|e| {
                 eprintln!("Warning: Failed to load sensor configs: {}, using defaults", e);
                 SensorConfigRegistry::with_defaults()
+            });
+
+        let platform_configs = PlatformConfigRegistry::load(Path::new("config"))
+            .unwrap_or_else(|e| {
+                eprintln!("Warning: Failed to load platform configs: {}, using defaults", e);
+                PlatformConfigRegistry::with_defaults()
             });
 
         let interceptor_configs = InterceptorConfigRegistry::load(Path::new("config"))
@@ -144,9 +145,9 @@ impl SimulationEngine {
             salvo_delay: 5.0, // 5 seconds between interceptor launches in a salvo
             targets_needing_followup: std::collections::HashSet::new(),
             shots_fired_per_target: std::collections::HashMap::new(),
-            defense_configs,
             missile_configs,
             sensor_configs,
+            platform_configs,
             interceptor_configs,
             satellite_configs,
         }
@@ -182,7 +183,7 @@ impl SimulationEngine {
         origin: GeoCoord,
         target: GeoCoord,
         launch_time: f64,
-        missile_type: MissileType,
+        _missile_type: MissileType,
     ) -> EntityId {
         let id = self.new_id();
         let range_km = haversine_distance(origin, target);
@@ -242,7 +243,7 @@ impl SimulationEngine {
         target: GeoCoord,
         launch_time: f64,
         max_decoys: u32,
-        missile_type: MissileType,
+        _missile_type: MissileType,
     ) -> EntityId {
         let id = self.new_id();
         let range_km = haversine_distance(origin, target);
@@ -343,6 +344,7 @@ impl SimulationEngine {
             &self.defense_units,
             &self.radar_stations,
             &self.satellites,
+            &self.interceptors,
             &self.sensor_configs,
             sim_dt,
             self.sim_time,
@@ -417,7 +419,12 @@ impl SimulationEngine {
             .map(|m| (m.id, (m.position, m.altitude_km)))
             .collect();
 
-        for interceptor in &mut self.interceptors {
+        // First pass: collect defense types to look up configs (avoiding borrow checker issues)
+        let interceptor_configs_cache: Vec<_> = self.interceptors.iter()
+            .map(|i| (i.defense_type, self.get_interceptor_config(i.defense_type).engagement.terminal_blend_factor))
+            .collect();
+
+        for (idx, interceptor) in self.interceptors.iter_mut().enumerate() {
             if interceptor.status != InterceptorStatus::InFlight {
                 continue;
             }
@@ -428,7 +435,7 @@ impl SimulationEngine {
             interceptor.update_kinematics();
 
             let kin = InterceptorKinematics::for_defense_type(interceptor.defense_type);
-            let flight_duration = interceptor.intercept_time - interceptor.launch_time;
+            let _flight_duration = interceptor.intercept_time - interceptor.launch_time;
 
             // Calculate position based on actual distance traveled using kinematics
             let distance_traveled = kin.distance_at_time(interceptor.current_flight_time);
@@ -452,8 +459,7 @@ impl SimulationEngine {
             // Exoatmospheric interceptors (SM-3, GBI, Arrow-3) have very limited divert capability
             // Endoatmospheric interceptors (Patriot, THAAD, Iron Dome) can maneuver more aggressively
             let in_terminal = interceptor.phase == InterceptorPhase::Terminal;
-            let max_terminal_blend = self.defense_configs.get(interceptor.defense_type)
-                .engagement.terminal_blend_factor;
+            let max_terminal_blend = interceptor_configs_cache[idx].1;
 
             let terminal_blend = if in_terminal {
                 let time_progress = interceptor.flight_progress();
@@ -545,7 +551,9 @@ impl SimulationEngine {
                 }
 
                 let distance = haversine_distance(unit.position, missile.position);
-                if distance > unit.detection_range_km() {
+                let sensor_config = self.sensor_configs.get_by_name(&unit.sensor_config_name);
+                let detection_range = sensor_config.detection.detection_range_km;
+                if distance > detection_range {
                     continue;
                 }
 
@@ -610,7 +618,9 @@ impl SimulationEngine {
                 }
 
                 let distance = haversine_distance(unit.position, missile.position);
-                if distance > unit.detection_range_km() {
+                let sensor_config = self.sensor_configs.get_by_name(&unit.sensor_config_name);
+                let detection_range = sensor_config.detection.detection_range_km;
+                if distance > detection_range {
                     continue;
                 }
 
@@ -678,7 +688,7 @@ impl SimulationEngine {
 
             // Calculate flight time using kinematics
             let time_to_intercept =
-                Self::calculate_flight_time(defense_type, position, intercept_pos, intercept_alt);
+                self.calculate_flight_time(defense_type, position, intercept_pos, intercept_alt);
 
             let mut interceptor = Interceptor::new(
                 interceptor_id,
@@ -693,7 +703,7 @@ impl SimulationEngine {
                 launch_time + time_to_intercept,
             );
             // Override hit probability from config
-            interceptor.hit_probability = self.defense_configs.get(defense_type).engagement.hit_probability;
+            interceptor.hit_probability = self.get_interceptor_config(defense_type).engagement.hit_probability;
 
             self.interceptors.push(interceptor);
             *self.interceptors_per_target.entry(target_id).or_insert(0) += 1;
@@ -702,9 +712,34 @@ impl SimulationEngine {
         }
     }
 
+    // ========================================================================
+    // Config Helper Methods
+    // ========================================================================
+
+    /// Get interceptor config for a defense unit via platform config
+    fn get_interceptor_config_for_unit(&self, unit: &DefenseUnit) -> &InterceptorConfig {
+        let platform_config = self.platform_configs.get_by_defense_type(unit.defense_type);
+        self.interceptor_configs.get_by_name(&platform_config.launcher.interceptor_type)
+    }
+
+    /// Get interceptor config by defense type
+    fn get_interceptor_config(&self, defense_type: DefenseType) -> &InterceptorConfig {
+        let platform_config = self.platform_configs.get_by_defense_type(defense_type);
+        self.interceptor_configs.get_by_name(&platform_config.launcher.interceptor_type)
+    }
+
+    /// Get platform config by defense type
+    fn get_platform_config(&self, defense_type: DefenseType) -> &PlatformConfig {
+        self.platform_configs.get_by_defense_type(defense_type)
+    }
+
+    // ========================================================================
+    // Interceptor Performance Methods
+    // ========================================================================
+
     /// Get average interceptor speed in km/s (accounting for boost and coast phases)
     fn interceptor_avg_speed(&self, defense_type: DefenseType) -> f64 {
-        self.defense_configs.get(defense_type).kinematics.average_speed_km_s
+        self.get_interceptor_config(defense_type).kinematics.average_speed_km_s
     }
 
     /// Calculate intercept solution using iterative method with proportional navigation
@@ -761,7 +796,7 @@ impl SimulationEngine {
             let (predicted_pos, predicted_alt) = trajectory.position_at(missile_progress);
 
             // Use the SAME flight time calculation that will be used for actual launch
-            let t_required = Self::calculate_flight_time(
+            let t_required = self.calculate_flight_time(
                 unit.defense_type,
                 unit.position,
                 predicted_pos,
@@ -776,9 +811,11 @@ impl SimulationEngine {
             let dist_to_intercept = haversine_distance(unit.position, predicted_pos);
             if abs_error < best_error {
                 // Validate this solution
-                let alt_ok = predicted_alt >= unit.defense_type.min_engagement_altitude_km()
-                    && predicted_alt <= unit.defense_type.max_engagement_altitude_km();
-                let range_ok = dist_to_intercept <= unit.engagement_range_km();
+                let interceptor_config = self.get_interceptor_config_for_unit(unit);
+                let platform_config = self.get_platform_config(unit.defense_type);
+                let alt_ok = predicted_alt >= interceptor_config.altitude_envelope.min_engagement_altitude_km
+                    && predicted_alt <= interceptor_config.altitude_envelope.max_engagement_altitude_km;
+                let range_ok = dist_to_intercept <= platform_config.launcher.engagement_range_km;
                 let time_ok = t_intercept <= time_to_impact - 3.0;
 
                 if alt_ok && range_ok && time_ok {
@@ -832,18 +869,20 @@ impl SimulationEngine {
             let (pos, alt) = trajectory.position_at(future_progress);
 
             // Check altitude envelope
-            if alt < unit.defense_type.min_engagement_altitude_km()
-                || alt > unit.defense_type.max_engagement_altitude_km()
+            let interceptor_config = self.get_interceptor_config_for_unit(unit);
+            if alt < interceptor_config.altitude_envelope.min_engagement_altitude_km
+                || alt > interceptor_config.altitude_envelope.max_engagement_altitude_km
             {
                 continue;
             }
 
             let dist = haversine_distance(unit.position, pos);
-            if dist > unit.engagement_range_km() {
+            let platform_config = self.get_platform_config(unit.defense_type);
+            if dist > platform_config.launcher.engagement_range_km {
                 continue;
             }
 
-            let t_to_reach = Self::calculate_flight_time(unit.defense_type, unit.position, pos, alt);
+            let t_to_reach = self.calculate_flight_time(unit.defense_type, unit.position, pos, alt);
 
             // Interceptor must arrive before or within 5 seconds of missile
             if t_to_reach <= future_time + 5.0 {
@@ -910,10 +949,8 @@ impl SimulationEngine {
     }
 
     /// Calculate flight time for interceptor using kinematics model
-    fn calculate_flight_time(defense_type: DefenseType, from: GeoCoord, to: GeoCoord, target_altitude: f64) -> f64 {
-        use crate::simulation::entities::InterceptorKinematics;
-
-        let kin = InterceptorKinematics::for_defense_type(defense_type);
+    fn calculate_flight_time(&self, defense_type: DefenseType, from: GeoCoord, to: GeoCoord, target_altitude: f64) -> f64 {
+        let kin = &self.get_interceptor_config(defense_type).kinematics;
         let horizontal_distance = haversine_distance(from, to);
         let total_distance = (horizontal_distance.powi(2) + target_altitude.powi(2)).sqrt();
 
@@ -957,7 +994,16 @@ impl SimulationEngine {
             .map(|m| m.id)
             .collect();
 
-        for interceptor in &mut self.interceptors {
+        // Pre-fetch kill envelope configs to avoid borrow checker issues
+        let kill_envelope_cache: Vec<_> = self.interceptors.iter()
+            .map(|i| {
+                let config = self.get_interceptor_config(i.defense_type);
+                (config.kill_envelope.seeker_range_km, config.kill_envelope.kill_radius_km,
+                 config.kill_envelope.base_pk, config.engagement.terminal_blend_factor)
+            })
+            .collect();
+
+        for (idx, interceptor) in self.interceptors.iter_mut().enumerate() {
             if interceptor.status != InterceptorStatus::InFlight {
                 continue;
             }
@@ -992,11 +1038,8 @@ impl SimulationEngine {
             // 3D distance to assigned target
             let distance_3d = (horizontal_distance.powi(2) + altitude_diff.powi(2)).sqrt();
 
-            // Kill envelope from config
-            let config = self.defense_configs.get(interceptor.defense_type);
-            let seeker_range_km = config.kill_envelope.seeker_range_km;
-            let kill_radius_km = config.kill_envelope.kill_radius_km;
-            let base_pk = config.kill_envelope.base_pk;
+            // Kill envelope from config (cached)
+            let (seeker_range_km, kill_radius_km, base_pk, terminal_blend_factor) = kill_envelope_cache[idx];
 
             // Check flight progress
             let flight_duration = interceptor.intercept_time - interceptor.launch_time;
@@ -1014,8 +1057,6 @@ impl SimulationEngine {
                 let predicted_error_horiz = haversine_distance(interceptor.target_position, missile_pos);
                 let predicted_error_vert = (interceptor.target_altitude_km - missile_alt).abs();
                 let predicted_error_3d = (predicted_error_horiz.powi(2) + predicted_error_vert.powi(2)).sqrt();
-
-                let terminal_blend_factor = config.engagement.terminal_blend_factor;
 
                 eprintln!("\n[{:?} Intercept Check] Target={}, Progress={:.2}, InTerminal={}",
                          interceptor.defense_type, target_id, progress, in_terminal);
