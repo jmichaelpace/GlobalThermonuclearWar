@@ -1009,7 +1009,15 @@ impl SimulationEngine {
         // 4. Choose between filtered estimates and ground truth
         if self.use_filtered_intercepts {
             // Use Kalman-filtered track data for intercept calculation
-            self.calculate_intercept_from_filtered_track(unit, target_id, &fused_track)
+            // Fall back to ground truth if filtered calculation fails
+            if let Some(result) = self.calculate_intercept_from_filtered_track(unit, target_id, &fused_track) {
+                Some(result)
+            } else {
+                // Filtered intercept failed - fall back to ground truth
+                let missile = self.missiles.iter().find(|m| m.id == target_id)?;
+                let (time, pos, alt) = self.calculate_intercept_solution(unit, missile)?;
+                Some((time, pos, alt, 0.0))
+            }
         } else {
             // Fall back to ground truth (legacy behavior)
             let missile = self.missiles.iter().find(|m| m.id == target_id)?;
@@ -1030,35 +1038,39 @@ impl SimulationEngine {
         if let Some(ekf) = self.detection.get_ekf_state(target_id) {
             // Use EKF state directly for trajectory prediction
             let (pos, alt) = ekf.get_position();
-            let (v_n, v_e, v_u) = ekf.get_velocity();
+            // get_velocity returns (ground_speed_km_s, heading_deg, vertical_rate_km_s)
+            let (ground_speed, heading_deg, vertical_rate) = ekf.get_velocity();
             let pos_uncertainty = ekf.get_position_uncertainty();
 
-            // Calculate ground speed and heading from velocity components
-            let ground_speed = (v_n * v_n + v_e * v_e).sqrt();
-            let heading_rad = v_e.atan2(v_n);
+            // Check if EKF has established velocity (needs multiple measurements)
+            // If ground speed is too low, EKF velocity hasn't converged yet
+            if ground_speed < 0.1 {
+                // Fall through to use fused track velocity estimate instead
+            } else {
+                // Build velocity estimate from EKF state
+                let velocity = crate::simulation::detection::VelocityEstimate {
+                    ground_speed_km_s: ground_speed,
+                    heading_deg,
+                    vertical_rate_km_s: vertical_rate,
+                    confidence: 0.9, // EKF provides high confidence estimates
+                    staleness: 0.0,
+                };
 
-            // Build velocity estimate from EKF state
-            let velocity = crate::simulation::detection::VelocityEstimate {
-                ground_speed_km_s: ground_speed,
-                heading_deg: heading_rad.to_degrees(),
-                vertical_rate_km_s: v_u,
-                confidence: 0.9, // EKF provides high confidence estimates
-                staleness: 0.0,
-            };
+                // Create a modified fused track with EKF-derived values
+                let ekf_track = crate::simulation::detection::FusedTrack {
+                    estimated_position: pos,
+                    estimated_altitude: alt,
+                    estimated_velocity: Some(velocity),
+                    uncertainty_radius_km: pos_uncertainty,
+                    kalman_position_uncertainty_km: Some(pos_uncertainty),
+                    ..*fused_track
+                };
 
-            // Create a modified fused track with EKF-derived values
-            let ekf_track = crate::simulation::detection::FusedTrack {
-                estimated_position: pos,
-                estimated_altitude: alt,
-                estimated_velocity: Some(velocity),
-                uncertainty_radius_km: pos_uncertainty,
-                kalman_position_uncertainty_km: Some(pos_uncertainty),
-                ..*fused_track
-            };
-
-            // Build trajectory prediction using EKF-enhanced track
-            let prediction = predict_trajectory_from_track(&ekf_track, None, 300.0)?;
-            return self.calculate_intercept_from_prediction(unit, &prediction);
+                // Build trajectory prediction using EKF-enhanced track
+                if let Some(prediction) = predict_trajectory_from_track(&ekf_track, None, 300.0) {
+                    return self.calculate_intercept_from_prediction(unit, &prediction);
+                }
+            }
         }
 
         // Fall back to linear Kalman filter state
