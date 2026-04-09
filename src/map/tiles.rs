@@ -4,6 +4,49 @@ use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
+/// Map style for MapTiler tiles
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapStyle {
+    StreetsLight,
+    StreetsDark,
+    Basic,
+    BasicDark,
+    Toner,
+    Satellite,
+}
+
+impl MapStyle {
+    /// Get the MapTiler style ID for URL construction
+    pub fn style_id(&self) -> &'static str {
+        match self {
+            MapStyle::StreetsLight => "streets-v2",
+            MapStyle::StreetsDark => "streets-v2-dark",
+            MapStyle::Basic => "basic-v2",
+            MapStyle::BasicDark => "basic-v2-dark",
+            MapStyle::Toner => "toner-v2",
+            MapStyle::Satellite => "satellite",
+        }
+    }
+
+    /// Display name for UI
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            MapStyle::StreetsLight => "Streets (Light)",
+            MapStyle::StreetsDark => "Streets (Dark)",
+            MapStyle::Basic => "Basic (Light)",
+            MapStyle::BasicDark => "Basic (Dark)",
+            MapStyle::Toner => "Toner (B&W)",
+            MapStyle::Satellite => "Satellite",
+        }
+    }
+}
+
+impl Default for MapStyle {
+    fn default() -> Self {
+        MapStyle::BasicDark
+    }
+}
+
 /// Status of a tile in the cache
 enum TileStatus {
     Loading,
@@ -228,6 +271,7 @@ pub struct TileCache {
     max_cache_size: usize,
     access_order: Vec<TileCoord>,
     api_key: String,
+    style: MapStyle,
 }
 
 impl TileCache {
@@ -264,13 +308,30 @@ impl TileCache {
             max_cache_size: 256,
             access_order: Vec::new(),
             api_key,
+            style: MapStyle::default(),
         }
     }
 
-    /// Build the tile URL for MapTiler with English labels
+    /// Get current map style
+    pub fn style(&self) -> MapStyle {
+        self.style
+    }
+
+    /// Set map style and clear cache to load new tiles
+    pub fn set_style(&mut self, style: MapStyle) {
+        if self.style != style {
+            self.style = style;
+            // Clear the cache so tiles reload with new style
+            self.tiles.clear();
+            self.access_order.clear();
+        }
+    }
+
+    /// Build the tile URL for MapTiler with current style
     fn build_url(&self, coord: &TileCoord) -> String {
         format!(
-            "https://api.maptiler.com/maps/streets-v2/{}/{}/{}@2x.png?key={}",
+            "https://api.maptiler.com/maps/{}/{}/{}/{}@2x.png?key={}",
+            self.style.style_id(),
             coord.z, coord.x, coord.y, self.api_key
         )
     }

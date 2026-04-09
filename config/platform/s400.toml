@@ -3,14 +3,12 @@
 # Official system designation
 name = "S-400"
 # Full system name and role
-description = "Russian long-range SAM with 40N6 missile"
+description = "Russian long-range surface-to-air missile system with multi-radar suite"
 
 # Launcher platform configuration
 [launcher]
 # Reference to interceptor configuration (by system name)
 interceptor_type = "40N6"
-# Reference to sensor configuration (by system name)
-sensor_config_name = "92N6E Grave Stone"
 # Maximum number of interceptors per battalion
 max_interceptors = 32
 # Time required to reload after depletion (minutes)
@@ -19,3 +17,16 @@ reload_time_minutes = 90.0
 max_salvo_size = 2
 # Maximum range at which interceptors can be launched (km)
 engagement_range_km = 400.0
+
+# Multi-sensor configuration
+[[launcher.sensors]]
+config_name = "91N6E Big Bird"
+role = "surveillance"
+azimuth_center_deg = 0.0
+# Uses full 360° coverage from sensor config
+
+[[launcher.sensors]]
+config_name = "92N6E Grave Stone"
+role = "fire_control"
+azimuth_center_deg = 0.0
+# Uses 120° coverage from sensor config

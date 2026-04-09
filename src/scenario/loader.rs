@@ -46,6 +46,10 @@ pub struct RadarStationConfig {
     pub lat: f64,
     pub lon: f64,
     pub range_km: f64,
+    /// Sensor configuration name (references config/sensors/*.toml filename without extension)
+    pub sensor_config: Option<String>,
+    /// Azimuth direction the radar faces (degrees, 0=North, 90=East)
+    pub facing_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,11 +105,13 @@ impl ScenarioFile {
             let affiliation = parse_affiliation(&radar.affiliation);
             let position = GeoCoord::new(radar.lat, radar.lon);
 
-            engine.add_radar_station(
+            engine.add_radar_station_with_config(
                 radar.name.clone(),
                 affiliation,
                 position,
                 radar.range_km,
+                radar.sensor_config.clone(),
+                radar.facing_deg,
             );
         }
 

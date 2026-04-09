@@ -19,6 +19,8 @@ elevation_min_deg = 3.0
 elevation_max_deg = 85.0
 # Radar frequency band - affects range, resolution, and atmospheric attenuation
 radar_band = "L"  # L-band (1.2-1.4 GHz) - long range early warning
+# Radar scanning mechanism type
+radar_type = "phased_array"
 
 # Tracking and processing capabilities
 [tracking]
@@ -28,3 +30,5 @@ max_simultaneous_tracks = 200
 track_update_rate_hz = 1.0
 # Minimum radar cross section detectable (dBsm, lower = can detect smaller targets)
 minimum_rcs_dbsm = -30.0
+# Maximum fire control tracks
+max_fire_control_tracks = 10

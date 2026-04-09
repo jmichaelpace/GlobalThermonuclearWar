@@ -68,6 +68,8 @@ affiliation = "Friendly"
 lat = 30.5
 lon = 34.9
 range_km = 1000.0
+sensor_config = "AN/TPY-2"
+facing_deg = 45.0  # Northeast - toward Iran
 
 # Iranian Missiles
 [[missiles]]

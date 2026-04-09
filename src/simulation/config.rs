@@ -85,7 +85,7 @@ pub struct KillEnvelopeConfig {
 // ============================================================================
 
 /// Radar frequency bands with different characteristics
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum RadarBand {
     #[serde(rename = "L")]
     L,  // 1-2 GHz: Long range, low attenuation, lower resolution
@@ -129,6 +129,47 @@ impl Default for RadarBand {
     }
 }
 
+/// Multi-band radar configuration - defines which bands to use for each mode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiBandConfig {
+    /// Band to use in Search mode
+    pub search_band: RadarBand,
+
+    /// Band to use in Track mode
+    pub track_band: RadarBand,
+
+    /// Band to use in FireControl mode
+    pub fire_control_band: RadarBand,
+}
+
+impl Default for MultiBandConfig {
+    fn default() -> Self {
+        // Conservative single X-band default
+        Self {
+            search_band: RadarBand::X,
+            track_band: RadarBand::X,
+            fire_control_band: RadarBand::X,
+        }
+    }
+}
+
+impl MultiBandConfig {
+    /// Get the appropriate band for a given radar mode
+    pub fn get_band_for_mode(&self, mode: RadarMode) -> RadarBand {
+        match mode {
+            RadarMode::Search => self.search_band,
+            RadarMode::Track => self.track_band,
+            RadarMode::FireControl => self.fire_control_band,
+        }
+    }
+
+    /// Check if this configuration uses multiple bands
+    pub fn is_multi_band(&self) -> bool {
+        self.search_band != self.track_band ||
+        self.track_band != self.fire_control_band
+    }
+}
+
 /// Radar scanning mechanism type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RadarType {
@@ -157,6 +198,44 @@ impl RadarMode {
     }
 }
 
+/// Role that determines sensor behavior and mode preferences
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SensorRole {
+    #[serde(rename = "surveillance")]
+    Surveillance,   // Wide-area search, prefers Search mode
+    #[serde(rename = "tracking")]
+    Tracking,       // Track maintenance, prefers Track mode
+    #[serde(rename = "fire_control")]
+    FireControl,    // Terminal guidance, prefers FireControl mode
+    #[serde(rename = "multi_role")]
+    MultiRole,      // Can perform any role
+}
+
+impl Default for SensorRole {
+    fn default() -> Self {
+        SensorRole::MultiRole
+    }
+}
+
+/// Configuration for a single sensor on a multi-sensor platform
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformSensorConfig {
+    /// Reference to sensor configuration by name
+    pub config_name: String,
+
+    /// Role of this sensor on the platform
+    #[serde(default)]
+    pub role: SensorRole,
+
+    /// Azimuth center direction in degrees (0 = North, 90 = East)
+    #[serde(default)]
+    pub azimuth_center_deg: f64,
+
+    /// Optional override for azimuth coverage (uses sensor's detection config if not set)
+    #[serde(default)]
+    pub azimuth_coverage_override_deg: Option<f64>,
+}
+
 /// Sensor detection parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorDetectionConfig {
@@ -164,8 +243,13 @@ pub struct SensorDetectionConfig {
     pub azimuth_coverage_deg: f64,
     pub elevation_min_deg: f64,
     pub elevation_max_deg: f64,
+    /// Legacy single-band field (for backward compatibility)
     #[serde(default)]
     pub radar_band: RadarBand,
+    /// NEW: Multi-band configuration (optional)
+    /// If specified, radar_band is ignored and bands are selected by mode
+    #[serde(default)]
+    pub multi_band: Option<MultiBandConfig>,
     pub radar_type: RadarType,
     /// Track mode range multiplier (multiplier on base range when in Track mode)
     #[serde(default = "default_track_multiplier")]
@@ -173,6 +257,12 @@ pub struct SensorDetectionConfig {
     /// FireControl mode range multiplier (multiplier on base range when in FireControl mode)
     #[serde(default = "default_fc_multiplier")]
     pub fire_control_range_multiplier: f64,
+    /// Track mode azimuth coverage multiplier (multiplier on base azimuth_coverage_deg)
+    #[serde(default = "default_track_azimuth_multiplier")]
+    pub track_azimuth_multiplier: f64,
+    /// FireControl mode azimuth coverage multiplier (multiplier on base azimuth_coverage_deg)
+    #[serde(default = "default_fc_azimuth_multiplier")]
+    pub fire_control_azimuth_multiplier: f64,
 }
 
 fn default_track_multiplier() -> f64 {
@@ -183,6 +273,14 @@ fn default_fc_multiplier() -> f64 {
     3.0  // Default 3× base range in FireControl mode
 }
 
+fn default_track_azimuth_multiplier() -> f64 {
+    1.0  // Default: same as search mode (backward compatible)
+}
+
+fn default_fc_azimuth_multiplier() -> f64 {
+    1.0  // Default: same as search mode (backward compatible)
+}
+
 impl SensorDetectionConfig {
     /// Get range multiplier for the given radar mode
     pub fn get_range_multiplier(&self, mode: RadarMode) -> f64 {
@@ -191,6 +289,35 @@ impl SensorDetectionConfig {
             RadarMode::Track => self.track_range_multiplier,
             RadarMode::FireControl => self.fire_control_range_multiplier,
         }
+    }
+
+    /// Get the radar band for a given mode, accounting for multi-band support
+    pub fn get_band_for_mode(&self, mode: RadarMode) -> RadarBand {
+        if let Some(multi_band) = &self.multi_band {
+            multi_band.get_band_for_mode(mode)
+        } else {
+            // Legacy single-band behavior
+            self.radar_band
+        }
+    }
+
+    /// Check if this sensor supports multi-band operation
+    pub fn is_multi_band(&self) -> bool {
+        self.multi_band.as_ref().map_or(false, |mb| mb.is_multi_band())
+    }
+
+    /// Get azimuth coverage multiplier for the given radar mode
+    pub fn get_azimuth_multiplier(&self, mode: RadarMode) -> f64 {
+        match mode {
+            RadarMode::Search => 1.0,  // Full base coverage
+            RadarMode::Track => self.track_azimuth_multiplier,
+            RadarMode::FireControl => self.fire_control_azimuth_multiplier,
+        }
+    }
+
+    /// Get effective azimuth coverage (in degrees) for a given radar mode
+    pub fn get_effective_azimuth_coverage(&self, mode: RadarMode) -> f64 {
+        self.azimuth_coverage_deg * self.get_azimuth_multiplier(mode)
     }
 }
 
@@ -327,9 +454,12 @@ impl SensorConfigRegistry {
                 elevation_min_deg: 0.0,
                 elevation_max_deg: 90.0,
                 radar_band: RadarBand::X,
+                multi_band: None,
                 radar_type: RadarType::Mechanical,
                 track_range_multiplier: 2.0,
                 fire_control_range_multiplier: 3.0,
+                track_azimuth_multiplier: 1.0,
+                fire_control_azimuth_multiplier: 1.0,
             },
             tracking: SensorTrackingConfig {
                 max_simultaneous_tracks: 20,
@@ -360,8 +490,13 @@ impl SensorConfigRegistry {
 pub struct LauncherConfig {
     /// Name of interceptor config to use (e.g., "THAAD Interceptor", "PAC-3 MSE")
     pub interceptor_type: String,
+    /// Legacy single-sensor field (for backward compatibility)
     /// Name of sensor config to use (e.g., "AN/TPY-2", "AN/MPQ-65")
+    #[serde(default)]
     pub sensor_config_name: String,
+    /// NEW: Multi-sensor support
+    #[serde(default)]
+    pub sensors: Vec<PlatformSensorConfig>,
     /// Maximum number of interceptors this platform can hold
     pub max_interceptors: u32,
     /// Time to reload magazine after depletion (minutes)
@@ -372,6 +507,27 @@ pub struct LauncherConfig {
     pub max_salvo_size: u32,
     /// Platform engagement range (may be limited by fire control quality, not just interceptor)
     pub engagement_range_km: f64,
+}
+
+impl LauncherConfig {
+    /// Get sensors for this platform (handles legacy and new formats)
+    pub fn get_sensors(&self) -> Vec<PlatformSensorConfig> {
+        if !self.sensors.is_empty() {
+            // New format: use sensors array
+            self.sensors.clone()
+        } else if !self.sensor_config_name.is_empty() {
+            // Legacy format: convert single sensor to array
+            vec![PlatformSensorConfig {
+                config_name: self.sensor_config_name.clone(),
+                role: SensorRole::MultiRole,
+                azimuth_center_deg: 0.0,
+                azimuth_coverage_override_deg: None,
+            }]
+        } else {
+            // No sensors configured
+            vec![]
+        }
+    }
 }
 
 fn default_max_salvo() -> u32 {
@@ -463,6 +619,7 @@ impl PlatformConfigRegistry {
             launcher: LauncherConfig {
                 interceptor_type: "Default Interceptor".to_string(),
                 sensor_config_name: "default".to_string(),
+                sensors: vec![],
                 max_interceptors: 8,
                 reload_time_minutes: 30.0,
                 max_salvo_size: 2,
