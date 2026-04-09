@@ -1026,7 +1026,42 @@ impl SimulationEngine {
         target_id: EntityId,
         fused_track: &crate::simulation::detection::FusedTrack,
     ) -> Option<(f64, GeoCoord, f64, f64)> {
-        // Get Kalman state for better position/velocity estimates
+        // Try EKF state first (preferred when using ExtendedKalman filter type)
+        if let Some(ekf) = self.detection.get_ekf_state(target_id) {
+            // Use EKF state directly for trajectory prediction
+            let (pos, alt) = ekf.get_position();
+            let (v_n, v_e, v_u) = ekf.get_velocity();
+            let pos_uncertainty = ekf.get_position_uncertainty();
+
+            // Calculate ground speed and heading from velocity components
+            let ground_speed = (v_n * v_n + v_e * v_e).sqrt();
+            let heading_rad = v_e.atan2(v_n);
+
+            // Build velocity estimate from EKF state
+            let velocity = crate::simulation::detection::VelocityEstimate {
+                ground_speed_km_s: ground_speed,
+                heading_deg: heading_rad.to_degrees(),
+                vertical_rate_km_s: v_u,
+                confidence: 0.9, // EKF provides high confidence estimates
+                staleness: 0.0,
+            };
+
+            // Create a modified fused track with EKF-derived values
+            let ekf_track = crate::simulation::detection::FusedTrack {
+                estimated_position: pos,
+                estimated_altitude: alt,
+                estimated_velocity: Some(velocity),
+                uncertainty_radius_km: pos_uncertainty,
+                kalman_position_uncertainty_km: Some(pos_uncertainty),
+                ..*fused_track
+            };
+
+            // Build trajectory prediction using EKF-enhanced track
+            let prediction = predict_trajectory_from_track(&ekf_track, None, 300.0)?;
+            return self.calculate_intercept_from_prediction(unit, &prediction);
+        }
+
+        // Fall back to linear Kalman filter state
         let kalman_state = self.detection.get_kalman_state(target_id);
 
         // Build trajectory prediction from track data
