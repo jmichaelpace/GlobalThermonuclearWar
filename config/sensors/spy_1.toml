@@ -18,6 +18,7 @@ elevation_min_deg = 0.0
 # Maximum elevation angle radar can scan (degrees, 90 = straight up)
 elevation_max_deg = 90.0
 # Radar frequency band - affects range, resolution, and atmospheric attenuation
+# Note: SPY-1 is a single-band radar (S-band only). See SPY-6 for multi-band capability.
 radar_band = "S"  # S-band (3 GHz) - good range, lower attenuation
 # Radar scanning mechanism type - phased_array supports multi-mode operation
 radar_type = "phased_array"

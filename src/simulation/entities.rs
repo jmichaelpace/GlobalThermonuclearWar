@@ -1,5 +1,5 @@
 use crate::map::GeoCoord;
-use crate::simulation::config::MissileType;
+use crate::simulation::config::{MissileType, SensorRole};
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for entities
@@ -178,6 +178,45 @@ impl Missile {
     }
 }
 
+/// Normalize angle difference to [-180, 180]
+pub fn normalize_angle_diff(angle: f64) -> f64 {
+    let mut diff = angle % 360.0;
+    if diff > 180.0 {
+        diff -= 360.0;
+    } else if diff < -180.0 {
+        diff += 360.0;
+    }
+    diff
+}
+
+/// Runtime sensor instance on a defense unit
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefenseUnitSensor {
+    /// Unique identifier for this sensor instance
+    pub sensor_id: EntityId,
+
+    /// Reference to sensor configuration
+    pub config_name: String,
+
+    /// Role of this sensor
+    pub role: SensorRole,
+
+    /// Azimuth center direction in degrees
+    pub azimuth_center_deg: f64,
+
+    /// Effective azimuth coverage in degrees
+    pub azimuth_coverage_deg: f64,
+}
+
+impl DefenseUnitSensor {
+    /// Check if a bearing falls within this sensor's coverage
+    pub fn is_bearing_in_coverage(&self, bearing_deg: f64) -> bool {
+        let half_coverage = self.azimuth_coverage_deg / 2.0;
+        let relative_bearing = normalize_angle_diff(bearing_deg - self.azimuth_center_deg);
+        relative_bearing.abs() <= half_coverage
+    }
+}
+
 /// A missile defense unit
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DefenseUnit {
@@ -190,8 +229,12 @@ pub struct DefenseUnit {
     pub interceptors_remaining: u32,
     pub max_interceptors: u32,
     pub sensor_type: SensorType,
+    /// Legacy single sensor field (for backward compatibility)
     /// Name of sensor configuration to use (maps to SensorConfigRegistry)
     pub sensor_config_name: String,
+    /// NEW: Multi-sensor support
+    #[serde(default)]
+    pub sensors: Vec<DefenseUnitSensor>,
 }
 
 impl DefenseUnit {
@@ -216,6 +259,7 @@ impl DefenseUnit {
             max_interceptors: interceptors,
             sensor_type: SensorType::Radar,
             sensor_config_name,
+            sensors: vec![], // Multi-sensor support, populated by add_defense_unit()
         }
     }
 }

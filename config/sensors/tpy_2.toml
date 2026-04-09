@@ -24,6 +24,9 @@ radar_type = "phased_array"
 # Custom mode range multipliers (X-band narrow beams allow excellent concentration)
 track_range_multiplier = 2.5       # 2.5x base range in Track mode (vs default 2.0x)
 fire_control_range_multiplier = 4.0  # 4.0x base range in FireControl mode (vs default 3.0x)
+# Azimuth coverage multipliers by mode - TPY-2 maintains wide coverage for flexible deployment
+track_azimuth_multiplier = 1.0       # 120° coverage in Track mode (full base coverage)
+fire_control_azimuth_multiplier = 1.0   # 120° coverage in FireControl mode (full base coverage)
 
 # Tracking and processing capabilities
 [tracking]
