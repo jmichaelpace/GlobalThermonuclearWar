@@ -17,6 +17,19 @@ A ballistic missile defense simulation built with Rust and egui. Visualize missi
 - **TOML-based Configuration**: All system parameters externalized for easy modification
 - **Scenario System**: Pre-built scenarios for different regions and threat environments
 
+### Visualization Features
+
+- **Multiple View Modes**:
+  - **2D Map (Mercator)**: Traditional flat map with world wrapping
+  - **3D Globe**: Orthographic projection with rotation and zoom
+  - **Isometric 3D Intercept View**: Platform-centric view showing engagement envelopes and tracked missiles
+- **Track Visualization Modes**:
+  - **True Track**: Shows actual missile positions (omniscient view)
+  - **Detected Track**: Shows sensor-perceived positions with uncertainty visualization
+- **Visual Effects**: Animated impact explosions, intercept effects, and debris clouds
+- **Real-time Event Log**: Tracks missile launches, detections, intercepts, and impacts
+- **Radar Coverage Visualization**: Shows search, track, and fire control radar ranges by mode
+
 ## Realism Features
 
 The simulation models real-world missile defense physics and sensor limitations for accurate scenario analysis.
@@ -460,6 +473,46 @@ max_simultaneous_tracks = 50
 track_update_rate_hz = 20.0
 minimum_rcs_dbsm = -30.0
 ```
+
+## Architecture
+
+The codebase is organized into modular components for maintainability and performance:
+
+```
+src/
+├── main.rs              # Application entry point
+├── app.rs               # Main application state and rendering
+├── effects/             # Visual effects system
+│   └── mod.rs           # EffectsManager, explosion/intercept animations
+├── tracking/            # Event tracking and logging
+│   └── mod.rs           # EventTracker, EventLog, simulation events
+├── view/                # Map projection abstractions
+│   └── mod.rs           # MapProjection trait, Mercator/Globe projections
+├── map/                 # Geographic utilities
+│   ├── tiles.rs         # Map tile caching (MapTiler, NASA GIBS)
+│   └── viewport.rs      # 2D viewport management
+├── rendering/           # Rendering utilities
+│   ├── colors.rs        # Centralized color definitions by affiliation/mode
+│   ├── overlays.rs      # Detection range overlays
+│   └── symbols.rs       # Military symbology
+├── scenario/            # Scenario loading
+│   └── mod.rs           # TOML scenario parser
+└── simulation/          # Core simulation engine
+    ├── engine.rs        # SimulationEngine, entity updates
+    ├── entities.rs      # Missile, Interceptor, DefenseUnit, etc.
+    ├── detection.rs     # Sensor modeling, track fusion
+    ├── physics.rs       # Ballistic trajectory calculations
+    ├── kalman.rs        # Kalman filter for track estimation
+    └── config.rs        # Configuration registries
+```
+
+### Key Design Patterns
+
+- **HashMap for O(1) Lookups**: Trajectory and track lookups use HashMaps instead of linear searches
+- **Modular Effects System**: Visual effects (explosions, intercepts) are managed by `EffectsManager` with spawnable effect requests
+- **Consolidated Event Tracking**: All simulation event state is encapsulated in `EventTracker`
+- **Projection Abstraction**: `MapProjection` trait enables unified rendering across 2D/3D views
+- **Centralized Colors**: Affiliation-based colors defined once in `rendering/colors.rs`
 
 ## Development
 

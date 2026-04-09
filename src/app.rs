@@ -1,5 +1,7 @@
-use crate::map::{GeoCoord, GibsTileCache, GibsTileCoord, TileCache, Viewport};
-use crate::rendering::{DetectionOverlays, MilitarySymbols};
+use crate::effects::{EffectsManager, EffectType};
+use crate::map::{GeoCoord, GibsTileCache, GibsTileCoord, MapStyle, TileCache, Viewport};
+use crate::rendering::{colors, DetectionOverlays, MilitarySymbols};
+use crate::tracking::{EventTracker, EventType, format_sim_time};
 use crate::scenario::{get_scenarios, ScenarioDefinition};
 use crate::simulation::{
     bearing, calculate_position_from_bearing_range, Affiliation,
@@ -22,8 +24,9 @@ pub enum Selection {
 /// View mode for rendering
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewMode {
-    Map2D,   // Traditional flat map (Mercator)
-    Globe,   // 3D globe (orthographic projection)
+    Map2D,       // Traditional flat map (Mercator)
+    Globe,       // 3D globe (orthographic projection)
+    Intercept3D, // Isometric 3D intercept view
 }
 
 /// Track visualization mode
@@ -89,6 +92,23 @@ impl GlobeState {
             screen_center.x + (x * self.radius as f64) as f32,
             screen_center.y - (y * self.radius as f64) as f32,  // Flip Y for screen coords
         ))
+    }
+
+    /// Check if a geographic point is visible (on the front of the globe)
+    pub fn is_visible(&self, coord: GeoCoord) -> bool {
+        let lat = coord.lat.to_radians();
+        let lon = coord.lon.to_radians();
+        let center_lat = self.center_lat.to_radians();
+        let center_lon = self.center_lon.to_radians();
+
+        // cos_c determines if point is on front (positive) or back (negative) of globe
+        let cos_c = center_lat.sin() * lat.sin() + center_lat.cos() * lat.cos() * (lon - center_lon).cos();
+        cos_c >= 0.0
+    }
+
+    /// Get the center of the globe view as a GeoCoord
+    pub fn center(&self) -> GeoCoord {
+        GeoCoord::new(self.center_lat, self.center_lon)
     }
 
     /// Convert screen position to geographic coordinates
@@ -165,6 +185,69 @@ impl GlobeState {
     }
 }
 
+/// Isometric 3D view state for intercept visualization
+pub struct IsometricViewState {
+    /// Horizontal orbit angle (degrees, 0 = North)
+    pub azimuth_deg: f64,
+    /// Vertical tilt angle (degrees, 0 = top-down, 90 = horizon)
+    pub elevation_deg: f64,
+    /// Zoom level (distance multiplier, 1.0 = default)
+    pub zoom: f64,
+    /// Is user currently dragging
+    pub dragging: bool,
+    /// Defense unit ID to focus on (if any)
+    pub focus_unit_id: Option<EntityId>,
+    /// Auto-show on engagement toggle
+    pub auto_show_on_engagement: bool,
+}
+
+impl Default for IsometricViewState {
+    fn default() -> Self {
+        Self {
+            azimuth_deg: 45.0,      // NE viewing angle
+            elevation_deg: 30.0,    // Slight tilt
+            zoom: 1.0,
+            dragging: false,
+            focus_unit_id: None,
+            auto_show_on_engagement: false,
+        }
+    }
+}
+
+impl IsometricViewState {
+    /// Project 3D local coordinates (km) to 2D screen position
+    /// x = East, y = North, z = Up (altitude)
+    pub fn project(&self, x: f64, y: f64, z: f64, center: egui::Pos2, scale: f64) -> egui::Pos2 {
+        let az_rad = self.azimuth_deg.to_radians();
+        let el_rad = self.elevation_deg.to_radians();
+
+        // Rotate around vertical axis (azimuth)
+        let rx = x * az_rad.cos() - y * az_rad.sin();
+        let ry = x * az_rad.sin() + y * az_rad.cos();
+
+        // Apply elevation tilt and zoom
+        let screen_x = rx * scale * self.zoom;
+        let screen_y = (-ry * el_rad.cos() - z * el_rad.sin()) * scale * self.zoom;
+
+        egui::pos2(center.x + screen_x as f32, center.y + screen_y as f32)
+    }
+
+    /// Handle drag for orbit rotation
+    pub fn handle_drag(&mut self, delta: egui::Vec2) {
+        self.azimuth_deg = (self.azimuth_deg - delta.x as f64 * 0.5) % 360.0;
+        if self.azimuth_deg < 0.0 {
+            self.azimuth_deg += 360.0;
+        }
+        self.elevation_deg = (self.elevation_deg + delta.y as f64 * 0.3).clamp(10.0, 80.0);
+    }
+
+    /// Handle scroll for zoom
+    pub fn handle_zoom(&mut self, delta: f32) {
+        let factor = 1.0 + delta as f64 * 0.1;
+        self.zoom = (self.zoom * factor).clamp(0.2, 5.0);
+    }
+}
+
 /// View preset for quick navigation
 pub struct ViewPreset {
     pub name: &'static str,
@@ -212,105 +295,9 @@ fn get_view_presets() -> Vec<ViewPreset> {
     ]
 }
 
-/// Event types for the event log
-#[derive(Clone, Debug)]
-pub enum EventType {
-    MissileLaunch { name: String },
-    ThreatDetected { threat_name: String, sensor_name: String },
-    InterceptorLaunch { defense_unit: String, target: String },
-    InterceptHit { target: String },
-    InterceptMiss { target: String },
-    MissileImpact { name: String },
-    DecoyDeployed { missile_name: String, decoys_active: u32 },
-    AllThreatsNeutralized,
-}
+// Event types and EventLog moved to src/tracking/mod.rs
 
-/// A single event in the log
-#[derive(Clone, Debug)]
-pub struct SimEvent {
-    pub time: f64,
-    pub event_type: EventType,
-}
-
-/// Event log to track simulation events
-#[derive(Clone, Debug, Default)]
-pub struct EventLog {
-    pub events: Vec<SimEvent>,
-    pub max_events: usize,
-}
-
-impl EventLog {
-    pub fn new() -> Self {
-        Self {
-            events: Vec::new(),
-            max_events: 100,
-        }
-    }
-
-    pub fn add(&mut self, time: f64, event_type: EventType) {
-        self.events.push(SimEvent { time, event_type });
-        if self.events.len() > self.max_events {
-            self.events.remove(0);
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.events.clear();
-    }
-}
-
-/// Format simulation time as MM:SS
-fn format_sim_time(time: f64) -> String {
-    let total_secs = time as u64;
-    let minutes = total_secs / 60;
-    let seconds = total_secs % 60;
-    format!("{:02}:{:02}", minutes, seconds)
-}
-
-/// Visual effect types
-#[derive(Clone, Debug)]
-pub enum EffectType {
-    Impact,      // Missile impact explosion
-    Intercept,   // Successful intercept
-    Debris,      // Debris cloud from intercept
-}
-
-/// Debris particle for explosion effects
-#[derive(Clone, Debug)]
-pub struct DebrisParticle {
-    pub angle: f32,      // Direction in radians
-    pub speed: f32,      // Pixels per second
-    pub size: f32,       // Particle size
-    pub lifetime: f32,   // 0.0 to 1.0
-}
-
-/// A visual effect to render
-#[derive(Clone, Debug)]
-pub struct VisualEffect {
-    pub position: GeoCoord,
-    pub effect_type: EffectType,
-    pub start_time: f64,
-    pub duration: f64,
-}
-
-impl VisualEffect {
-    pub fn new(position: GeoCoord, effect_type: EffectType, start_time: f64) -> Self {
-        let duration = match effect_type {
-            EffectType::Impact => 3.0,     // 3 seconds
-            EffectType::Intercept => 2.0,  // 2 seconds
-            EffectType::Debris => 2.5,     // 2.5 seconds
-        };
-        Self { position, effect_type, start_time, duration }
-    }
-
-    pub fn progress(&self, current_time: f64) -> f64 {
-        ((current_time - self.start_time) / self.duration).clamp(0.0, 1.0)
-    }
-
-    pub fn is_finished(&self, current_time: f64) -> bool {
-        current_time > self.start_time + self.duration
-    }
-}
+// Visual effects are now managed by EffectsManager in src/effects/mod.rs
 
 pub struct App {
     viewport: Viewport,
@@ -325,17 +312,15 @@ pub struct App {
     show_radar_stats: bool,
     selection: Option<Selection>,
     current_scenario: usize,
-    event_log: EventLog,
-    // Track state for event generation
-    previous_missile_states: std::collections::HashMap<u64, MissileStatus>,
-    previous_interceptor_count: usize,
-    previous_intercept_states: std::collections::HashMap<u64, crate::simulation::InterceptorStatus>,
-    previous_decoy_counts: std::collections::HashMap<u64, u32>,
-    // Visual effects
-    visual_effects: Vec<VisualEffect>,
-    // View mode (Map2D or Globe)
+    // Consolidated event tracking
+    event_tracker: EventTracker,
+    // Visual effects manager
+    effects_manager: EffectsManager,
+    // View mode (Map2D, Globe, or Intercept3D)
     view_mode: ViewMode,
     globe_state: GlobeState,
+    // Isometric 3D intercept view state
+    isometric_state: IsometricViewState,
     // NASA GIBS tile cache for globe view
     gibs_tile_cache: GibsTileCache,
     // Track view mode (True or Detected)
@@ -373,14 +358,11 @@ impl App {
             show_radar_stats: false,
             selection: None,
             current_scenario: 4, // Demo scenario
-            event_log: EventLog::new(),
-            previous_missile_states: std::collections::HashMap::new(),
-            previous_interceptor_count: 0,
-            previous_intercept_states: std::collections::HashMap::new(),
-            previous_decoy_counts: std::collections::HashMap::new(),
-            visual_effects: Vec::new(),
+            event_tracker: EventTracker::new(),
+            effects_manager: EffectsManager::new(),
             view_mode: ViewMode::Map2D,
             globe_state: GlobeState::default(),
+            isometric_state: IsometricViewState::default(),
             gibs_tile_cache: GibsTileCache::new(),
             track_view_mode: TrackViewMode::DetectedTrack,
             show_false_alarms: true,
@@ -390,433 +372,66 @@ impl App {
 
     /// Check for state changes and generate events
     fn generate_events(&mut self) {
-        use crate::simulation::{InterceptorStatus, MissileStatus};
         let sim_time = self.simulation.sim_time;
 
-        // Check for missile state changes
-        for missile in &self.simulation.missiles {
-            let prev_status = self.previous_missile_states.get(&missile.id).copied();
+        // Use EventTracker to check for events and get effect requests
+        let effect_requests = self.event_tracker.check_for_events(
+            sim_time,
+            &self.simulation.missiles,
+            &self.simulation.interceptors,
+            &self.simulation.defense_units,
+        );
 
-            match (prev_status, missile.status) {
-                // Missile launched
-                (Some(MissileStatus::PreLaunch), MissileStatus::Boost) |
-                (None, MissileStatus::Boost) => {
-                    if missile.affiliation == Affiliation::Hostile {
-                        self.event_log.add(sim_time, EventType::MissileLaunch {
-                            name: missile.name.clone(),
-                        });
-                    }
-                }
-                // Missile impacted
-                (Some(status), MissileStatus::Impacted) if status != MissileStatus::Impacted => {
-                    if missile.affiliation == Affiliation::Hostile {
-                        self.event_log.add(sim_time, EventType::MissileImpact {
-                            name: missile.name.clone(),
-                        });
-                        // Add impact visual effect
-                        self.visual_effects.push(VisualEffect::new(
-                            missile.target,
-                            EffectType::Impact,
-                            sim_time,
-                        ));
-                    }
-                }
-                _ => {}
-            }
-
-            self.previous_missile_states.insert(missile.id, missile.status);
-
-            // Check for decoy deployments
-            if missile.has_countermeasures {
-                let prev_decoys = self.previous_decoy_counts.get(&missile.id).copied().unwrap_or(0);
-                if missile.decoys_deployed > prev_decoys {
-                    self.event_log.add(sim_time, EventType::DecoyDeployed {
-                        missile_name: missile.name.clone(),
-                        decoys_active: missile.decoys_deployed,
-                    });
-                }
-                self.previous_decoy_counts.insert(missile.id, missile.decoys_deployed);
-            }
-        }
-
-        // Check for new interceptor launches
-        if self.simulation.interceptors.len() > self.previous_interceptor_count {
-            for interceptor in self.simulation.interceptors.iter().skip(self.previous_interceptor_count) {
-                // Find defense unit name
-                let unit_name = self.simulation.defense_units
-                    .iter()
-                    .find(|u| u.id == interceptor.launcher_id)
-                    .map(|u| format!("{} ({})", u.name, u.defense_type.name()))
-                    .unwrap_or_else(|| "Unknown".to_string());
-
-                // Find target name
-                let target_name = self.simulation.missiles
-                    .iter()
-                    .find(|m| m.id == interceptor.target_id)
-                    .map(|m| m.name.clone())
-                    .unwrap_or_else(|| "Unknown".to_string());
-
-                self.event_log.add(sim_time, EventType::InterceptorLaunch {
-                    defense_unit: unit_name,
-                    target: target_name,
-                });
-            }
-        }
-        self.previous_interceptor_count = self.simulation.interceptors.len();
-
-        // Check for intercept results
-        for interceptor in &self.simulation.interceptors {
-            let prev_status = self.previous_intercept_states.get(&interceptor.id).copied();
-
-            let target_name = self.simulation.missiles
-                .iter()
-                .find(|m| m.id == interceptor.target_id)
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            match (prev_status, interceptor.status) {
-                (Some(InterceptorStatus::InFlight), InterceptorStatus::Hit) |
-                (None, InterceptorStatus::Hit) if prev_status != Some(InterceptorStatus::Hit) => {
-                    self.event_log.add(sim_time, EventType::InterceptHit {
-                        target: target_name,
-                    });
-                    // Add intercept visual effect at target position
-                    self.visual_effects.push(VisualEffect::new(
-                        interceptor.target_position,
-                        EffectType::Intercept,
-                        sim_time,
-                    ));
-                }
-                (Some(InterceptorStatus::InFlight), InterceptorStatus::Miss) |
-                (None, InterceptorStatus::Miss) if prev_status != Some(InterceptorStatus::Miss) => {
-                    self.event_log.add(sim_time, EventType::InterceptMiss {
-                        target: target_name,
-                    });
-                }
-                _ => {}
-            }
-
-            self.previous_intercept_states.insert(interceptor.id, interceptor.status);
+        // Spawn requested visual effects
+        for request in effect_requests {
+            self.effects_manager.spawn(request.position, request.effect_type, sim_time);
         }
     }
 
     /// Clear event tracking state (called when loading new scenario)
     fn clear_event_tracking(&mut self) {
-        self.event_log.clear();
-        self.previous_missile_states.clear();
-        self.previous_interceptor_count = 0;
-        self.previous_intercept_states.clear();
-        self.previous_decoy_counts.clear();
-        self.visual_effects.clear();
+        self.event_tracker.clear();
+        self.effects_manager.clear();
     }
 
     /// Update visual effects (remove finished ones)
     fn update_visual_effects(&mut self) {
         let sim_time = self.simulation.sim_time;
-        self.visual_effects.retain(|effect| !effect.is_finished(sim_time));
+        self.effects_manager.update(sim_time);
     }
 
     /// Render visual effects (explosions, etc.)
     fn render_visual_effects(&self, painter: &egui::Painter, screen_rect: egui::Rect) {
         let sim_time = self.simulation.sim_time;
 
-        for effect in &self.visual_effects {
+        for effect in self.effects_manager.effects() {
             let progress = effect.progress(sim_time);
             let positions = self.viewport.geo_to_screen_wrapped(effect.position, screen_rect);
 
             for pos in positions {
                 match effect.effect_type {
                     EffectType::Impact => {
-                        self.render_impact_effect(painter, pos, progress);
+                        EffectsManager::render_impact_effect(painter, pos, progress);
                     }
                     EffectType::Intercept => {
-                        self.render_intercept_effect(painter, pos, progress);
+                        EffectsManager::render_intercept_effect(painter, pos, progress);
                     }
                     EffectType::Debris => {
-                        self.render_debris_effect(painter, pos, progress);
+                        EffectsManager::render_debris_effect(painter, pos, progress);
                     }
                 }
             }
         }
     }
 
-    /// Render an impact explosion effect with debris
-    fn render_impact_effect(&self, painter: &egui::Painter, pos: egui::Pos2, progress: f64) {
-        let progress = progress as f32;
-
-        // Initial bright flash (first 10%)
-        if progress < 0.1 {
-            let flash_progress = progress / 0.1;
-            let flash_size = 30.0 + flash_progress * 20.0;
-            let flash_alpha = ((1.0 - flash_progress) * 255.0) as u8;
-            painter.circle_filled(
-                pos,
-                flash_size,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, flash_alpha),
-            );
-        }
-
-        // Fireball (first 40%)
-        if progress < 0.4 {
-            let fireball_progress = progress / 0.4;
-            let fireball_size = 20.0 + fireball_progress * 30.0;
-            let alpha = ((1.0 - fireball_progress) * 200.0) as u8;
-
-            // Orange/red gradient
-            painter.circle_filled(
-                pos,
-                fireball_size,
-                egui::Color32::from_rgba_unmultiplied(255, 150, 50, alpha),
-            );
-            painter.circle_filled(
-                pos,
-                fireball_size * 0.6,
-                egui::Color32::from_rgba_unmultiplied(255, 200, 100, alpha),
-            );
-        }
-
-        // Expanding shockwave rings
-        let num_rings = 4;
-        for i in 0..num_rings {
-            let ring_delay = i as f32 * 0.1;
-            let ring_progress = ((progress - ring_delay) / 0.6).clamp(0.0, 1.0);
-
-            if ring_progress > 0.0 {
-                let radius = 15.0 + ring_progress * 60.0;
-                let alpha = ((1.0 - ring_progress) * 180.0) as u8;
-                let width = 4.0 - ring_progress * 3.0;
-
-                let color = egui::Color32::from_rgba_unmultiplied(
-                    255,
-                    (100.0 + i as f32 * 30.0) as u8,
-                    0,
-                    alpha,
-                );
-                painter.circle_stroke(pos, radius, egui::Stroke::new(width.max(0.5), color));
-            }
-        }
-
-        // Debris particles (flying outward)
-        let num_debris = 12;
-        for i in 0..num_debris {
-            let angle = (i as f32 / num_debris as f32) * std::f32::consts::TAU;
-            // Add some variation using the index
-            let angle = angle + (i as f32 * 0.7).sin() * 0.3;
-            let speed = 40.0 + (i as f32 * 1.3).sin() * 20.0;
-            let debris_progress = (progress * 1.2).clamp(0.0, 1.0);
-
-            let distance = speed * debris_progress;
-            let debris_x = pos.x + angle.cos() * distance;
-            let debris_y = pos.y + angle.sin() * distance;
-
-            let alpha = ((1.0 - debris_progress) * 255.0) as u8;
-            let size = 2.0 + (i as f32 * 0.5).sin().abs() * 2.0;
-
-            // Debris color (orange to gray)
-            let gray = (debris_progress * 150.0) as u8;
-            let color = egui::Color32::from_rgba_unmultiplied(
-                255 - gray,
-                150 - gray.min(150),
-                gray / 2,
-                alpha,
-            );
-
-            painter.circle_filled(egui::pos2(debris_x, debris_y), size * (1.0 - debris_progress * 0.5), color);
-        }
-
-        // Smoke cloud (fades in as explosion fades)
-        if progress > 0.3 {
-            let smoke_progress = ((progress - 0.3) / 0.7).clamp(0.0, 1.0);
-            let smoke_alpha = ((1.0 - smoke_progress * 0.5) * 80.0) as u8;
-            let smoke_size = 25.0 + smoke_progress * 15.0;
-
-            painter.circle_filled(
-                pos,
-                smoke_size,
-                egui::Color32::from_rgba_unmultiplied(80, 80, 80, smoke_alpha),
-            );
-        }
-
-        // Ground scar marker (persists)
-        if progress > 0.5 {
-            let marker_alpha = (((progress - 0.5) / 0.5) * 200.0) as u8;
-
-            // Crater circle
-            painter.circle_stroke(
-                pos,
-                10.0,
-                egui::Stroke::new(2.5, egui::Color32::from_rgba_unmultiplied(100, 50, 30, marker_alpha)),
-            );
-
-            // X mark
-            let x_size = 7.0;
-            let x_color = egui::Color32::from_rgba_unmultiplied(200, 50, 50, marker_alpha);
-            painter.line_segment(
-                [egui::pos2(pos.x - x_size, pos.y - x_size), egui::pos2(pos.x + x_size, pos.y + x_size)],
-                egui::Stroke::new(2.5, x_color),
-            );
-            painter.line_segment(
-                [egui::pos2(pos.x + x_size, pos.y - x_size), egui::pos2(pos.x - x_size, pos.y + x_size)],
-                egui::Stroke::new(2.5, x_color),
-            );
-        }
-    }
-
-    /// Render an intercept success effect with debris
-    fn render_intercept_effect(&self, painter: &egui::Painter, pos: egui::Pos2, progress: f64) {
-        let progress = progress as f32;
-
-        // Initial bright flash
-        if progress < 0.15 {
-            let flash_progress = progress / 0.15;
-            let flash_size = 20.0 + flash_progress * 10.0;
-            let flash_alpha = ((1.0 - flash_progress) * 255.0) as u8;
-            painter.circle_filled(
-                pos,
-                flash_size,
-                egui::Color32::from_rgba_unmultiplied(200, 255, 200, flash_alpha),
-            );
-        }
-
-        // Green/white expanding shockwave
-        let num_rings = 3;
-        for i in 0..num_rings {
-            let ring_delay = i as f32 * 0.12;
-            let ring_progress = ((progress - ring_delay) / 0.5).clamp(0.0, 1.0);
-
-            if ring_progress > 0.0 {
-                let radius = 12.0 + ring_progress * 40.0;
-                let alpha = ((1.0 - ring_progress) * 200.0) as u8;
-                let width = 3.0 - ring_progress * 2.0;
-
-                let color = if i == 0 {
-                    egui::Color32::from_rgba_unmultiplied(150, 255, 150, alpha)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(100, 255, 100, alpha)
-                };
-                painter.circle_stroke(pos, radius, egui::Stroke::new(width.max(0.5), color));
-            }
-        }
-
-        // Debris particles (destroyed missile fragments)
-        let num_debris = 10;
-        for i in 0..num_debris {
-            let angle = (i as f32 / num_debris as f32) * std::f32::consts::TAU;
-            let angle = angle + (i as f32 * 1.1).sin() * 0.4;
-            let speed = 30.0 + (i as f32 * 0.9).sin() * 15.0;
-            let debris_progress = (progress * 1.5).clamp(0.0, 1.0);
-
-            let distance = speed * debris_progress;
-            // Add gravity effect (debris falls)
-            let gravity = debris_progress * debris_progress * 20.0;
-            let debris_x = pos.x + angle.cos() * distance;
-            let debris_y = pos.y + angle.sin() * distance + gravity;
-
-            let alpha = ((1.0 - debris_progress) * 220.0) as u8;
-            let size = 1.5 + (i as f32 * 0.4).sin().abs() * 1.5;
-
-            // Debris color (white-hot to dark)
-            let heat = 1.0 - debris_progress;
-            let color = egui::Color32::from_rgba_unmultiplied(
-                (100.0 + heat * 155.0) as u8,
-                (200.0 + heat * 55.0) as u8,
-                (100.0 + heat * 100.0) as u8,
-                alpha,
-            );
-
-            painter.circle_filled(egui::pos2(debris_x, debris_y), size * (1.0 - debris_progress * 0.3), color);
-
-            // Small trail behind each debris piece
-            if debris_progress < 0.7 {
-                let trail_alpha = (alpha as f32 * 0.5) as u8;
-                let trail_x = debris_x - angle.cos() * 5.0;
-                let trail_y = debris_y - angle.sin() * 5.0 - 3.0;
-                painter.line_segment(
-                    [egui::pos2(debris_x, debris_y), egui::pos2(trail_x, trail_y)],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(150, 255, 150, trail_alpha)),
-                );
-            }
-        }
-
-        // Success checkmark (fades in)
-        if progress > 0.6 {
-            let check_progress = ((progress - 0.6) / 0.4).clamp(0.0, 1.0);
-            let check_alpha = (check_progress * 200.0) as u8;
-            let check_color = egui::Color32::from_rgba_unmultiplied(50, 255, 50, check_alpha);
-
-            // Checkmark
-            let check_size = 8.0;
-            painter.line_segment(
-                [
-                    egui::pos2(pos.x - check_size, pos.y),
-                    egui::pos2(pos.x - check_size * 0.3, pos.y + check_size * 0.7),
-                ],
-                egui::Stroke::new(3.0, check_color),
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(pos.x - check_size * 0.3, pos.y + check_size * 0.7),
-                    egui::pos2(pos.x + check_size, pos.y - check_size * 0.5),
-                ],
-                egui::Stroke::new(3.0, check_color),
-            );
-        }
-    }
-
-    /// Render a debris cloud effect (scattered fragments)
-    fn render_debris_effect(&self, painter: &egui::Painter, pos: egui::Pos2, progress: f64) {
-        let progress = progress as f32;
-
-        // Expanding debris cloud
-        let num_particles = 16;
-        for i in 0..num_particles {
-            let base_angle = (i as f32 / num_particles as f32) * std::f32::consts::TAU;
-            let angle_offset = (i as f32 * 2.3 + 0.5).sin() * 0.3;
-            let angle = base_angle + angle_offset;
-
-            let speed = 20.0 + (i as f32 * 1.7).sin().abs() * 25.0;
-            let distance = speed * progress;
-
-            // Gravity effect
-            let gravity = progress * progress * 30.0;
-            let debris_x = pos.x + angle.cos() * distance;
-            let debris_y = pos.y + angle.sin() * distance + gravity;
-
-            let alpha = ((1.0 - progress * 0.8) * 200.0) as u8;
-            let size = 1.0 + (i as f32 * 0.6).sin().abs() * 2.0;
-
-            // Gray debris color
-            let brightness = 80 + ((i as f32 * 1.2).sin().abs() * 100.0) as u8;
-            let color = egui::Color32::from_rgba_unmultiplied(
-                brightness,
-                brightness,
-                brightness,
-                alpha,
-            );
-
-            painter.circle_filled(
-                egui::pos2(debris_x, debris_y),
-                size * (1.0 - progress * 0.4),
-                color,
-            );
-        }
-
-        // Smoke cloud expanding
-        let smoke_alpha = ((1.0 - progress) * 80.0) as u8;
-        let smoke_radius = 10.0 + progress * 30.0;
-        painter.circle_filled(
-            pos,
-            smoke_radius,
-            egui::Color32::from_rgba_unmultiplied(100, 100, 100, smoke_alpha),
-        );
-    }
+    // Note: Effect rendering methods moved to EffectsManager in src/effects/mod.rs
 
     /// Render the event log
     fn render_event_log(&self, ui: &mut egui::Ui) {
         ui.heading("Event Log");
         ui.add_space(4.0);
 
-        if self.event_log.events.is_empty() {
+        if self.event_tracker.event_log.events.is_empty() {
             ui.label(egui::RichText::new("No events yet").weak().italics());
             return;
         }
@@ -825,7 +440,7 @@ impl App {
             .max_height(200.0)
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                for event in self.event_log.events.iter().rev().take(20) {
+                for event in self.event_tracker.event_log.events.iter().rev().take(20) {
                     let time_str = format_sim_time(event.time);
                     let (icon, text, color) = match &event.event_type {
                         EventType::MissileLaunch { name } => (
@@ -883,6 +498,7 @@ impl App {
         match self.view_mode {
             ViewMode::Map2D => self.render_map_2d(ui),
             ViewMode::Globe => self.render_globe(ui),
+            ViewMode::Intercept3D => self.render_intercept_3d_fullscreen(ui),
         }
     }
 
@@ -1676,7 +1292,7 @@ impl App {
             }
             TrackViewMode::DetectedTrack => {
                 // Show missiles at sensor-perceived positions with uncertainty
-                let defense_unit_ids: Vec<u64> = self.simulation.defense_units.iter().map(|u| u.id).collect();
+                let defense_unit_ids: std::collections::HashSet<u64> = self.simulation.defense_units.iter().map(|u| u.id).collect();
                 let fused_tracks = self.simulation.detection.get_all_fused_tracks(&defense_unit_ids);
                 for track in &fused_tracks {
                     self.render_detected_missile_globe(painter, screen_center, &track);
@@ -1770,56 +1386,41 @@ impl App {
 
                 // FireControl range (innermost, red/orange)
                 let fc_range = base_range * config.detection.get_range_multiplier(RadarMode::FireControl) * 1.5;
-                let fc_color = match unit.affiliation {
-                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
-                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
-                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
-                };
                 self.draw_range_circle_globe(
                     painter,
                     screen_center,
                     unit.position,
                     fc_range,
-                    egui::Stroke::new(2.0, fc_color),
+                    egui::Stroke::new(2.0, colors::fire_control_color(unit.affiliation)),
                 );
 
                 // Track range (middle, yellow)
                 let track_range = base_range * config.detection.get_range_multiplier(RadarMode::Track) * 1.5;
-                let track_color = match unit.affiliation {
-                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
-                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
-                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
-                };
                 self.draw_range_circle_globe(
                     painter,
                     screen_center,
                     unit.position,
                     track_range,
-                    egui::Stroke::new(1.5, track_color),
+                    egui::Stroke::new(1.5, colors::track_mode_color(unit.affiliation)),
                 );
 
                 // Search range (outermost, cyan/green)
                 let search_range = base_range * config.detection.get_range_multiplier(RadarMode::Search) * 1.5;
-                let search_color = match unit.affiliation {
-                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
-                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
-                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
-                };
                 self.draw_range_circle_globe(
                     painter,
                     screen_center,
                     unit.position,
                     search_range,
-                    egui::Stroke::new(1.0, search_color),
+                    egui::Stroke::new(1.0, colors::search_mode_color(unit.affiliation)),
                 );
 
                 // Draw mode capacity indicator
                 if let Some(screen_pos) = self.globe_state.geo_to_screen(unit.position, screen_center) {
                     let mode_state = self.simulation.detection.radar_mode_states.get(&unit.id);
                     if let Some(state) = mode_state {
-                        let fc_count = state.target_modes.values().filter(|&&m| m == RadarMode::FireControl).count();
-                        let track_count = state.target_modes.values().filter(|&&m| m == RadarMode::Track).count();
-                        let total_count = state.target_modes.len();
+                        let fc_count = state.target_assignments.values().filter(|&&(m, _)| m == RadarMode::FireControl).count();
+                        let track_count = state.target_assignments.values().filter(|&&(m, _)| m == RadarMode::Track).count();
+                        let total_count = state.target_assignments.len();
 
                         let label = format!(
                             "FC:{}/{} T:{} All:{}/{}",
@@ -1842,33 +1443,22 @@ impl App {
             } else {
                 // Mechanical radar - single range circle
                 let max_detection_range_km = base_range * 1.5;
-                let stroke_color = match unit.affiliation {
-                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
-                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 80, 80, 100),
-                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(100, 255, 100, 100),
-                };
-
                 self.draw_range_circle_globe(
                     painter,
                     screen_center,
                     unit.position,
                     max_detection_range_km,
-                    egui::Stroke::new(1.5, stroke_color),
+                    egui::Stroke::new(1.5, colors::detection_range_stroke(unit.affiliation)),
                 );
             }
 
             // Draw engagement range circle (for all radars)
-            let engagement_color = match unit.affiliation {
-                Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 255, 150, 80),
-                Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 80),
-                Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 80),
-            };
             self.draw_range_circle_globe(
                 painter,
                 screen_center,
                 unit.position,
                 engagement_range_km,
-                egui::Stroke::new(2.0, engagement_color),
+                egui::Stroke::new(2.0, colors::engagement_envelope_color(unit.affiliation)),
             );
         }
 
@@ -1879,60 +1469,137 @@ impl App {
 
             // Check if this is a phased array radar
             if config.detection.radar_type == RadarType::PhasedArray {
-                // Draw three mode-specific ranges for phased arrays
+                // Draw three mode-specific ranges for phased arrays with mode-specific azimuth coverage
 
-                // FireControl range (innermost, red/orange)
-                let fc_range = base_range * config.detection.get_range_multiplier(RadarMode::FireControl) * 1.5;
-                let fc_color = match station.affiliation {
-                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
-                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
-                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
-                };
-                self.draw_range_circle_globe(
-                    painter,
-                    screen_center,
-                    station.position,
-                    fc_range,
-                    egui::Stroke::new(2.0, fc_color),
-                );
+                // Search range (outermost, cyan/green) - drawn first so it's behind
+                let search_range = base_range * config.detection.get_range_multiplier(RadarMode::Search) * 1.5;
+                let search_coverage = config.detection.get_effective_azimuth_coverage(RadarMode::Search);
+
+                if search_coverage >= 360.0 {
+                    // Full circle for omnidirectional
+                    let search_color = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
+                    };
+                    self.draw_range_circle_globe(
+                        painter,
+                        screen_center,
+                        station.position,
+                        search_range,
+                        egui::Stroke::new(1.0, search_color),
+                    );
+                } else {
+                    // Sector for directional radars
+                    let search_fill = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 25),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 25),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 25),
+                    };
+                    let search_stroke = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
+                    };
+                    self.draw_range_sector_globe(
+                        painter,
+                        screen_center,
+                        station.position,
+                        station.facing_deg,
+                        search_coverage,
+                        search_range,
+                        search_fill,
+                        egui::Stroke::new(1.0, search_stroke),
+                    );
+                }
 
                 // Track range (middle, yellow)
                 let track_range = base_range * config.detection.get_range_multiplier(RadarMode::Track) * 1.5;
-                let track_color = match station.affiliation {
-                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
-                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
-                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
-                };
-                self.draw_range_circle_globe(
-                    painter,
-                    screen_center,
-                    station.position,
-                    track_range,
-                    egui::Stroke::new(1.5, track_color),
-                );
+                let track_coverage = config.detection.get_effective_azimuth_coverage(RadarMode::Track);
 
-                // Search range (outermost, cyan/green)
-                let search_range = base_range * config.detection.get_range_multiplier(RadarMode::Search) * 1.5;
-                let search_color = match station.affiliation {
-                    Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
-                    Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
-                    Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
-                };
-                self.draw_range_circle_globe(
-                    painter,
-                    screen_center,
-                    station.position,
-                    search_range,
-                    egui::Stroke::new(1.0, search_color),
-                );
+                if track_coverage >= 360.0 {
+                    let track_color = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
+                    };
+                    self.draw_range_circle_globe(
+                        painter,
+                        screen_center,
+                        station.position,
+                        track_range,
+                        egui::Stroke::new(1.5, track_color),
+                    );
+                } else {
+                    let track_fill = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 35),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 35),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 35),
+                    };
+                    let track_stroke = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
+                    };
+                    self.draw_range_sector_globe(
+                        painter,
+                        screen_center,
+                        station.position,
+                        station.facing_deg,
+                        track_coverage,
+                        track_range,
+                        track_fill,
+                        egui::Stroke::new(1.5, track_stroke),
+                    );
+                }
+
+                // FireControl range (innermost, red/orange) - drawn last so it's on top
+                let fc_range = base_range * config.detection.get_range_multiplier(RadarMode::FireControl) * 1.5;
+                let fc_coverage = config.detection.get_effective_azimuth_coverage(RadarMode::FireControl);
+
+                if fc_coverage >= 360.0 {
+                    let fc_color = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
+                    };
+                    self.draw_range_circle_globe(
+                        painter,
+                        screen_center,
+                        station.position,
+                        fc_range,
+                        egui::Stroke::new(2.0, fc_color),
+                    );
+                } else {
+                    let fc_fill = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 45),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 45),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 45),
+                    };
+                    let fc_stroke = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
+                    };
+                    self.draw_range_sector_globe(
+                        painter,
+                        screen_center,
+                        station.position,
+                        station.facing_deg,
+                        fc_coverage,
+                        fc_range,
+                        fc_fill,
+                        egui::Stroke::new(2.0, fc_stroke),
+                    );
+                }
 
                 // Draw mode capacity indicator
                 if let Some(screen_pos) = self.globe_state.geo_to_screen(station.position, screen_center) {
                     let mode_state = self.simulation.detection.radar_mode_states.get(&station.id);
                     if let Some(state) = mode_state {
-                        let fc_count = state.target_modes.values().filter(|&&m| m == RadarMode::FireControl).count();
-                        let track_count = state.target_modes.values().filter(|&&m| m == RadarMode::Track).count();
-                        let total_count = state.target_modes.len();
+                        let fc_count = state.target_assignments.values().filter(|&&(m, _)| m == RadarMode::FireControl).count();
+                        let track_count = state.target_assignments.values().filter(|&&(m, _)| m == RadarMode::Track).count();
+                        let total_count = state.target_assignments.len();
 
                         let label = format!(
                             "FC:{}/{} T:{} All:{}/{}",
@@ -2019,15 +1686,148 @@ impl App {
         }
     }
 
+    /// Draw a radar sector arc on the globe (for directional radars)
+    fn draw_range_sector_globe(
+        &self,
+        painter: &egui::Painter,
+        screen_center: egui::Pos2,
+        center: GeoCoord,
+        facing_deg: f64,      // Direction radar faces (0 = North, 90 = East)
+        coverage_deg: f64,    // Width of coverage arc
+        range_km: f64,
+        fill_color: egui::Color32,
+        stroke: egui::Stroke,
+    ) {
+        // Convert range from km to degrees
+        let range_deg = range_km / 111.32;
+
+        // Calculate start and end angles for the sector
+        let half_coverage = coverage_deg / 2.0;
+        let start_bearing = facing_deg - half_coverage;
+        let end_bearing = facing_deg + half_coverage;
+
+        // Generate arc points
+        let segments = 36;
+        let mut arc_points: Vec<egui::Pos2> = Vec::new();
+
+        for i in 0..=segments {
+            let t = i as f64 / segments as f64;
+            let bearing = start_bearing + (end_bearing - start_bearing) * t;
+            let angle = (90.0 - bearing).to_radians(); // Convert from geographic to math angle
+
+            // Calculate point at range from center
+            let lat_offset = range_deg * angle.sin();
+            let lon_offset = range_deg * angle.cos() / center.lat.to_radians().cos().max(0.1);
+
+            let point = GeoCoord::new(
+                (center.lat + lat_offset).clamp(-90.0, 90.0),
+                center.lon + lon_offset,
+            );
+
+            if let Some(screen_pos) = self.globe_state.geo_to_screen(point, screen_center) {
+                arc_points.push(screen_pos);
+            } else if !arc_points.is_empty() {
+                break; // Stop if we hit the back of the globe
+            }
+        }
+
+        // Draw filled sector if we have enough points
+        if arc_points.len() >= 2 {
+            if let Some(center_screen) = self.globe_state.geo_to_screen(center, screen_center) {
+                // Create polygon for filled sector
+                let mut polygon_points = vec![center_screen];
+                polygon_points.extend(arc_points.iter());
+
+                if polygon_points.len() >= 3 {
+                    painter.add(egui::Shape::convex_polygon(
+                        polygon_points.clone(),
+                        fill_color,
+                        egui::Stroke::NONE,
+                    ));
+                }
+
+                // Draw arc outline
+                painter.add(egui::Shape::line(arc_points.clone(), stroke));
+
+                // Draw radial lines
+                if !arc_points.is_empty() {
+                    painter.line_segment([center_screen, arc_points[0]], stroke);
+                    painter.line_segment([center_screen, *arc_points.last().unwrap()], stroke);
+                }
+            }
+        }
+    }
+
+    /// Draw a radar sector arc on the 2D map (for directional radars)
+    fn draw_range_sector_2d(
+        &self,
+        painter: &egui::Painter,
+        screen_rect: egui::Rect,
+        center: GeoCoord,
+        facing_deg: f64,      // Direction radar faces (0 = North, 90 = East)
+        coverage_deg: f64,    // Width of coverage arc
+        range_km: f64,
+        fill_color: egui::Color32,
+        stroke: egui::Stroke,
+    ) {
+        // Get all wrapped positions for this location
+        let center_positions = self.viewport.geo_to_screen_wrapped(center, screen_rect);
+
+        // Convert range from km to degrees
+        let range_deg = range_km / 111.32;
+
+        // Calculate start and end angles for the sector
+        let half_coverage = coverage_deg / 2.0;
+        let start_bearing = facing_deg - half_coverage;
+        let end_bearing = facing_deg + half_coverage;
+
+        // Generate arc points
+        let segments = 36;
+
+        for center_screen in center_positions {
+            let mut arc_points: Vec<egui::Pos2> = Vec::new();
+
+            for i in 0..=segments {
+                let t = i as f64 / segments as f64;
+                let bearing = start_bearing + (end_bearing - start_bearing) * t;
+                let angle = (90.0 - bearing).to_radians(); // Convert from geographic to math angle
+
+                // Calculate point at range from center
+                let lat_offset = range_deg * angle.sin();
+                let lon_offset = range_deg * angle.cos() / center.lat.to_radians().cos().max(0.1);
+
+                let point = GeoCoord::new(
+                    (center.lat + lat_offset).clamp(-90.0, 90.0),
+                    center.lon + lon_offset,
+                );
+
+                let screen_pos = self.viewport.geo_to_screen(point, screen_rect);
+                arc_points.push(screen_pos);
+            }
+
+            // Draw sector outline only (no fill)
+            if arc_points.len() >= 2 {
+                // Draw arc outline
+                painter.add(egui::Shape::line(arc_points.clone(), stroke));
+
+                // Draw radial lines from center to arc endpoints
+                if !arc_points.is_empty() {
+                    painter.line_segment([center_screen, arc_points[0]], stroke);
+                    painter.line_segment([center_screen, *arc_points.last().unwrap()], stroke);
+                }
+            }
+        }
+    }
+
     /// Render tracking lines from sensors to detected targets on the globe
     fn render_tracking_lines_globe(&self, painter: &egui::Painter, screen_center: egui::Pos2) {
         for detection in &self.simulation.detection.active_detections {
-            // Find the sensor position
+            // Find the sensor position - check both unit.id and unit.sensors[].sensor_id
             let sensor_data = self
                 .simulation
                 .defense_units
                 .iter()
-                .find(|u| u.id == detection.sensor_id)
+                .find(|u| u.id == detection.sensor_id || u.sensors.iter().any(|s| s.sensor_id == detection.sensor_id))
                 .map(|u| (u.position, u.affiliation))
                 .or_else(|| {
                     self.simulation
@@ -2363,7 +2163,7 @@ impl App {
             }
             TrackViewMode::DetectedTrack => {
                 // Show missiles at sensor-perceived positions with uncertainty
-                let defense_unit_ids: Vec<u64> = self.simulation.defense_units.iter().map(|u| u.id).collect();
+                let defense_unit_ids: std::collections::HashSet<u64> = self.simulation.defense_units.iter().map(|u| u.id).collect();
                 let fused_tracks = self.simulation.detection.get_all_fused_tracks(&defense_unit_ids);
                 for track in &fused_tracks {
                     self.render_detected_missile(painter, screen_rect, &track);
@@ -2421,32 +2221,156 @@ impl App {
 
         // Radar station detection ranges
         for station in &self.simulation.radar_stations {
-            let positions = self.viewport.geo_to_screen_wrapped(station.position, screen_rect);
+            let config = self.simulation.sensor_configs.get_by_name(&station.sensor_config_name);
+            let base_range = station.detection_range_km;
 
-            // Show actual max detection range (1.5× nominal for probabilistic detection)
-            let max_range_km = station.detection_range_km * 1.5;
-            let range_deg = max_range_km / 111.32;
+            // Check if this is a phased array radar
+            if config.detection.radar_type == RadarType::PhasedArray {
+                // Draw three mode-specific ranges for phased arrays with mode-specific azimuth coverage
 
-            let base_center = self.viewport.geo_to_screen(station.position, screen_rect);
-            let edge_pos = GeoCoord::new(
-                station.position.lat + range_deg,
-                station.position.lon,
-            );
-            let edge_screen = self.viewport.geo_to_screen(edge_pos, screen_rect);
-            let radius = (base_center.y - edge_screen.y).abs();
+                // Search range (outermost, cyan/green) - drawn first so it's behind
+                let search_range = base_range * config.detection.get_range_multiplier(RadarMode::Search) * 1.5;
+                let search_coverage = config.detection.get_effective_azimuth_coverage(RadarMode::Search);
 
-            let stroke_color = match station.affiliation {
-                Affiliation::Friendly => egui::Color32::from_rgb(100, 220, 150),
-                Affiliation::Hostile => egui::Color32::from_rgb(255, 150, 50),
-                Affiliation::Neutral => egui::Color32::from_rgb(220, 220, 100),
-            };
+                if search_coverage >= 360.0 {
+                    // Full circle for omnidirectional
+                    let search_color = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
+                    };
+                    let range_deg = search_range / 111.32;
+                    let base_center = self.viewport.geo_to_screen(station.position, screen_rect);
+                    let edge_pos = GeoCoord::new(station.position.lat + range_deg, station.position.lon);
+                    let edge_screen = self.viewport.geo_to_screen(edge_pos, screen_rect);
+                    let radius = (base_center.y - edge_screen.y).abs();
+                    for center in self.viewport.geo_to_screen_wrapped(station.position, screen_rect) {
+                        painter.circle_stroke(center, radius, egui::Stroke::new(1.0, search_color));
+                    }
+                } else {
+                    // Sector for directional radars
+                    let search_fill = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 25),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 25),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 25),
+                    };
+                    let search_stroke = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(100, 220, 255, 70),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 150, 100, 70),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(150, 255, 150, 70),
+                    };
+                    self.draw_range_sector_2d(
+                        painter,
+                        screen_rect,
+                        station.position,
+                        station.facing_deg,
+                        search_coverage,
+                        search_range,
+                        search_fill,
+                        egui::Stroke::new(1.0, search_stroke),
+                    );
+                }
 
-            for center in positions {
-                painter.circle_stroke(
-                    center,
-                    radius,
-                    egui::Stroke::new(1.5, stroke_color),
-                );
+                // Track range (middle, yellow)
+                let track_range = base_range * config.detection.get_range_multiplier(RadarMode::Track) * 1.5;
+                let track_coverage = config.detection.get_effective_azimuth_coverage(RadarMode::Track);
+
+                if track_coverage >= 360.0 {
+                    let track_color = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
+                    };
+                    let range_deg = track_range / 111.32;
+                    let base_center = self.viewport.geo_to_screen(station.position, screen_rect);
+                    let edge_pos = GeoCoord::new(station.position.lat + range_deg, station.position.lon);
+                    let edge_screen = self.viewport.geo_to_screen(edge_pos, screen_rect);
+                    let radius = (base_center.y - edge_screen.y).abs();
+                    for center in self.viewport.geo_to_screen_wrapped(station.position, screen_rect) {
+                        painter.circle_stroke(center, radius, egui::Stroke::new(1.5, track_color));
+                    }
+                } else {
+                    let track_fill = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 35),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 35),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 35),
+                    };
+                    let track_stroke = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 255, 100, 90),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 200, 80, 90),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(200, 255, 100, 90),
+                    };
+                    self.draw_range_sector_2d(
+                        painter,
+                        screen_rect,
+                        station.position,
+                        station.facing_deg,
+                        track_coverage,
+                        track_range,
+                        track_fill,
+                        egui::Stroke::new(1.5, track_stroke),
+                    );
+                }
+
+                // FireControl range (innermost, red/orange) - drawn last so it's on top
+                let fc_range = base_range * config.detection.get_range_multiplier(RadarMode::FireControl) * 1.5;
+                let fc_coverage = config.detection.get_effective_azimuth_coverage(RadarMode::FireControl);
+
+                if fc_coverage >= 360.0 {
+                    let fc_color = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
+                    };
+                    let range_deg = fc_range / 111.32;
+                    let base_center = self.viewport.geo_to_screen(station.position, screen_rect);
+                    let edge_pos = GeoCoord::new(station.position.lat + range_deg, station.position.lon);
+                    let edge_screen = self.viewport.geo_to_screen(edge_pos, screen_rect);
+                    let radius = (base_center.y - edge_screen.y).abs();
+                    for center in self.viewport.geo_to_screen_wrapped(station.position, screen_rect) {
+                        painter.circle_stroke(center, radius, egui::Stroke::new(2.0, fc_color));
+                    }
+                } else {
+                    let fc_fill = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 45),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 45),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 45),
+                    };
+                    let fc_stroke = match station.affiliation {
+                        Affiliation::Friendly => egui::Color32::from_rgba_unmultiplied(255, 150, 50, 120),
+                        Affiliation::Hostile => egui::Color32::from_rgba_unmultiplied(255, 50, 50, 120),
+                        Affiliation::Neutral => egui::Color32::from_rgba_unmultiplied(255, 200, 50, 120),
+                    };
+                    self.draw_range_sector_2d(
+                        painter,
+                        screen_rect,
+                        station.position,
+                        station.facing_deg,
+                        fc_coverage,
+                        fc_range,
+                        fc_fill,
+                        egui::Stroke::new(2.0, fc_stroke),
+                    );
+                }
+            } else {
+                // Mechanical radar - single range circle
+                let max_range_km = base_range * 1.5;
+                let range_deg = max_range_km / 111.32;
+
+                let base_center = self.viewport.geo_to_screen(station.position, screen_rect);
+                let edge_pos = GeoCoord::new(station.position.lat + range_deg, station.position.lon);
+                let edge_screen = self.viewport.geo_to_screen(edge_pos, screen_rect);
+                let radius = (base_center.y - edge_screen.y).abs();
+
+                let stroke_color = match station.affiliation {
+                    Affiliation::Friendly => egui::Color32::from_rgb(100, 220, 150),
+                    Affiliation::Hostile => egui::Color32::from_rgb(255, 150, 50),
+                    Affiliation::Neutral => egui::Color32::from_rgb(220, 220, 100),
+                };
+
+                for center in self.viewport.geo_to_screen_wrapped(station.position, screen_rect) {
+                    painter.circle_stroke(center, radius, egui::Stroke::new(1.5, stroke_color));
+                }
             }
         }
     }
@@ -2454,12 +2378,12 @@ impl App {
     fn render_tracking_lines(&self, painter: &egui::Painter, screen_rect: egui::Rect) {
         // Draw lines from sensors to detected targets
         for detection in &self.simulation.detection.active_detections {
-            // Find the sensor position
+            // Find the sensor position - check both unit.id and unit.sensors[].sensor_id
             let sensor_pos = self
                 .simulation
                 .defense_units
                 .iter()
-                .find(|u| u.id == detection.sensor_id)
+                .find(|u| u.id == detection.sensor_id || u.sensors.iter().any(|s| s.sensor_id == detection.sensor_id))
                 .map(|u| (u.position, u.affiliation))
                 .or_else(|| {
                     self.simulation
@@ -4139,6 +4063,916 @@ impl App {
         ui.add(egui::ProgressBar::new(ammo_pct)
             .text(format!("{}/{}", unit.interceptors_remaining, unit.max_interceptors))
             .fill(egui::Color32::from_rgb(100, 200, 100)));
+
+        // Sensor Status Section
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Sensor Status");
+        ui.add_space(4.0);
+
+        if !unit.sensors.is_empty() {
+            for sensor in &unit.sensors {
+                let config = self.simulation.sensor_configs.get_by_name(&sensor.config_name);
+
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new(&sensor.config_name).strong());
+
+                    // Radar type and role
+                    ui.horizontal(|ui| {
+                        ui.label("Role:");
+                        ui.label(format!("{:?}", sensor.role));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Type:");
+                        ui.label(format!("{:?}", config.detection.radar_type));
+                    });
+
+                    // Azimuth coverage
+                    ui.horizontal(|ui| {
+                        ui.label("Coverage:");
+                        ui.label(format!("{:.0}° @ {:.0}°", sensor.azimuth_coverage_deg, sensor.azimuth_center_deg));
+                    });
+
+                    // Mode state for phased arrays
+                    if let Some(mode_state) = self.simulation.detection.radar_mode_states.get(&sensor.sensor_id) {
+                        ui.horizontal(|ui| {
+                            ui.label("Modes:");
+                            let fc = mode_state.stats.last_fc_count;
+                            let track = mode_state.stats.last_track_count;
+                            let search = mode_state.stats.last_search_count;
+                            ui.label(format!("FC:{} T:{} S:{}", fc, track, search));
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Tracks:");
+                            ui.label(format!("{}/{}",
+                                mode_state.target_assignments.len(),
+                                config.tracking.max_simultaneous_tracks));
+                        });
+
+                        // Time budget utilization
+                        let util = mode_state.stats.last_time_budget_utilization;
+                        let color = if util > 0.95 {
+                            egui::Color32::from_rgb(255, 100, 100)
+                        } else if util > 0.75 {
+                            egui::Color32::from_rgb(255, 200, 100)
+                        } else {
+                            egui::Color32::from_rgb(100, 200, 100)
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label("Time Budget:");
+                            ui.colored_label(color, format!("{:.0}%", util * 100.0));
+                        });
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        } else {
+            // Legacy single sensor
+            let config = self.simulation.sensor_configs.get_by_name(&unit.sensor_config_name);
+            ui.label(format!("Sensor: {}", unit.sensor_config_name));
+            ui.horizontal(|ui| {
+                ui.label("Type:");
+                ui.label(format!("{:?}", config.detection.radar_type));
+            });
+
+            if let Some(mode_state) = self.simulation.detection.radar_mode_states.get(&unit.id) {
+                ui.horizontal(|ui| {
+                    ui.label("Tracks:");
+                    ui.label(format!("{}/{}",
+                        mode_state.target_assignments.len(),
+                        config.tracking.max_simultaneous_tracks));
+                });
+            }
+        }
+
+        // Active Engagements Section
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Engagements");
+        ui.add_space(4.0);
+
+        // Count interceptors launched by this unit
+        let active_interceptors: Vec<_> = self.simulation.interceptors.iter()
+            .filter(|i| i.launcher_id == unit.id && i.status == crate::simulation::InterceptorStatus::InFlight)
+            .collect();
+
+        let pending_interceptors: Vec<_> = self.simulation.interceptors.iter()
+            .filter(|i| i.launcher_id == unit.id && i.status == crate::simulation::InterceptorStatus::Pending)
+            .collect();
+
+        if active_interceptors.is_empty() && pending_interceptors.is_empty() {
+            ui.colored_label(egui::Color32::GRAY, "No active engagements");
+        } else {
+            ui.label(format!("In Flight: {}", active_interceptors.len()));
+            ui.label(format!("Pending: {}", pending_interceptors.len()));
+
+            for interceptor in active_interceptors.iter().take(5) {
+                // Find target name
+                let target_name = self.simulation.missiles.iter()
+                    .find(|m| m.id == interceptor.target_id)
+                    .map(|m| m.name.as_str())
+                    .unwrap_or("Unknown");
+
+                let progress = interceptor.flight_progress();
+                ui.horizontal(|ui| {
+                    ui.label(format!("→ {} ({:.0}%)", target_name, progress * 100.0));
+                });
+            }
+            if active_interceptors.len() > 5 {
+                ui.label(format!("  ...and {} more", active_interceptors.len() - 5));
+            }
+
+            // 3D Intercept Visualization
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Intercept Geometry").strong());
+
+            // Draw 3D view for first active interceptor
+            if let Some(interceptor) = active_interceptors.first() {
+                if let Some(missile) = self.simulation.missiles.iter().find(|m| m.id == interceptor.target_id) {
+                    self.render_intercept_3d_view(ui, unit, interceptor, missile);
+                }
+            }
+        }
+
+        // Detections Section
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Detections");
+        ui.add_space(4.0);
+
+        // Count detections for this unit's sensors
+        let detection_count: usize = if !unit.sensors.is_empty() {
+            unit.sensors.iter()
+                .map(|s| self.simulation.detection.detections_for_sensor(s.sensor_id).len())
+                .sum()
+        } else {
+            self.simulation.detection.detections_for_sensor(unit.id).len()
+        };
+
+        if detection_count == 0 {
+            ui.colored_label(egui::Color32::GRAY, "No current detections");
+        } else {
+            ui.label(format!("Active detections: {}", detection_count));
+
+            // Show tracked targets
+            let tracked_count = self.simulation.detection.active_tracks.iter()
+                .filter(|t| {
+                    if !unit.sensors.is_empty() {
+                        unit.sensors.iter().any(|s| s.sensor_id == t.tracker_id)
+                    } else {
+                        t.tracker_id == unit.id
+                    }
+                })
+                .count();
+
+            ui.label(format!("Stable tracks: {}", tracked_count));
+        }
+    }
+
+    /// Render a 3D visualization of the intercept geometry
+    fn render_intercept_3d_view(
+        &self,
+        ui: &mut egui::Ui,
+        unit: &DefenseUnit,
+        interceptor: &Interceptor,
+        missile: &Missile,
+    ) {
+        let view_size = egui::vec2(220.0, 180.0);
+        let (response, painter) = ui.allocate_painter(view_size, egui::Sense::hover());
+        let rect = response.rect;
+
+        // Background
+        painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(20, 25, 35));
+        painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 70, 90)), egui::StrokeKind::Inside);
+
+        // 3D projection parameters (isometric-like)
+        let center = rect.center();
+        let scale = 0.6; // Scale factor for the view
+
+        // Calculate relative positions (km from unit)
+        let unit_pos = unit.position;
+
+        // Convert geo coords to local XY (km), Z = altitude
+        let to_local = |geo: GeoCoord, alt: f64| -> (f64, f64, f64) {
+            let dx = (geo.lon - unit_pos.lon) * 111.32 * unit_pos.lat.to_radians().cos();
+            let dy = (geo.lat - unit_pos.lat) * 111.32;
+            (dx, dy, alt)
+        };
+
+        // Project 3D to 2D screen coordinates (isometric projection)
+        let project = |x: f64, y: f64, z: f64| -> egui::Pos2 {
+            // Isometric angles
+            let iso_x = (x - y) * 0.7 * scale;
+            let iso_y = -(x + y) * 0.4 * scale - z * 0.8 * scale;
+
+            egui::pos2(
+                center.x + iso_x as f32,
+                center.y + iso_y as f32 + 30.0, // Offset down to leave room for labels
+            )
+        };
+
+        // Find max distance for scaling
+        let missile_local = to_local(missile.position, missile.altitude_km);
+        let intercept_local = to_local(interceptor.target_position, interceptor.target_altitude_km);
+        let interceptor_local = to_local(interceptor.position, interceptor.altitude_km);
+
+        let max_dist = [
+            (missile_local.0.abs() + missile_local.1.abs()).max(missile_local.2),
+            (intercept_local.0.abs() + intercept_local.1.abs()).max(intercept_local.2),
+            (interceptor_local.0.abs() + interceptor_local.1.abs()).max(interceptor_local.2),
+            500.0, // Minimum scale
+        ].iter().cloned().fold(0.0_f64, f64::max);
+
+        let norm = 80.0 / max_dist; // Normalize to fit in view
+
+        // Helper to project normalized coordinates
+        let proj = |x: f64, y: f64, z: f64| -> egui::Pos2 {
+            project(x * norm, y * norm, z * norm)
+        };
+
+        // Draw ground plane grid
+        let grid_color = egui::Color32::from_rgba_unmultiplied(100, 100, 100, 40);
+        let grid_extent = max_dist * 0.8;
+        for i in -2..=2 {
+            let offset = (i as f64) * grid_extent / 2.0;
+            // X lines
+            let p1 = proj(-grid_extent, offset, 0.0);
+            let p2 = proj(grid_extent, offset, 0.0);
+            painter.line_segment([p1, p2], egui::Stroke::new(0.5, grid_color));
+            // Y lines
+            let p1 = proj(offset, -grid_extent, 0.0);
+            let p2 = proj(offset, grid_extent, 0.0);
+            painter.line_segment([p1, p2], egui::Stroke::new(0.5, grid_color));
+        }
+
+        // Draw axes
+        let axis_len = max_dist * 0.6;
+        let origin = proj(0.0, 0.0, 0.0);
+
+        // X axis (East) - Red
+        let x_end = proj(axis_len, 0.0, 0.0);
+        painter.line_segment([origin, x_end], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 80, 80)));
+        painter.text(x_end + egui::vec2(5.0, 0.0), egui::Align2::LEFT_CENTER, "E",
+            egui::FontId::proportional(10.0), egui::Color32::from_rgb(200, 80, 80));
+
+        // Y axis (North) - Green
+        let y_end = proj(0.0, axis_len, 0.0);
+        painter.line_segment([origin, y_end], egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 200, 80)));
+        painter.text(y_end + egui::vec2(0.0, -8.0), egui::Align2::CENTER_BOTTOM, "N",
+            egui::FontId::proportional(10.0), egui::Color32::from_rgb(80, 200, 80));
+
+        // Z axis (Altitude) - Blue
+        let z_end = proj(0.0, 0.0, axis_len);
+        painter.line_segment([origin, z_end], egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 150, 255)));
+        painter.text(z_end + egui::vec2(5.0, 0.0), egui::Align2::LEFT_CENTER, "Alt",
+            egui::FontId::proportional(10.0), egui::Color32::from_rgb(80, 150, 255));
+
+        // Draw defense unit (launcher) at origin
+        painter.circle_filled(origin, 6.0, egui::Color32::from_rgb(100, 200, 100));
+        painter.circle_stroke(origin, 6.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+
+        // Draw missile trajectory (from origin toward target, showing current position)
+        let missile_origin = to_local(missile.origin, 0.0);
+        let missile_target = to_local(missile.target, 0.0);
+        let missile_current = to_local(missile.position, missile.altitude_km);
+
+        // Draw missile path as arc (simplified - just origin to current to projected impact)
+        let missile_path_color = egui::Color32::from_rgb(255, 100, 100);
+
+        // Missile trajectory points (simplified arc)
+        let num_points = 20;
+        let mut missile_points: Vec<egui::Pos2> = Vec::new();
+        for i in 0..=num_points {
+            let t = i as f64 / num_points as f64;
+            let progress = t * missile.flight_progress();
+
+            // Interpolate position along path
+            let x = missile_origin.0 + (missile_target.0 - missile_origin.0) * progress;
+            let y = missile_origin.1 + (missile_target.1 - missile_origin.1) * progress;
+
+            // Parabolic altitude profile
+            let alt = missile.altitude_km * 4.0 * progress * (1.0 - progress) / (missile.flight_progress().max(0.01));
+            let alt = alt.min(missile.altitude_km * 1.5);
+
+            missile_points.push(proj(x, y, alt.max(0.0)));
+        }
+
+        if missile_points.len() >= 2 {
+            painter.add(egui::Shape::line(missile_points, egui::Stroke::new(2.0, missile_path_color)));
+        }
+
+        // Draw missile current position
+        let missile_pos = proj(missile_current.0, missile_current.1, missile_current.2);
+        painter.circle_filled(missile_pos, 5.0, egui::Color32::from_rgb(255, 80, 80));
+
+        // Draw vertical line from missile to ground (altitude indicator)
+        let missile_ground = proj(missile_current.0, missile_current.1, 0.0);
+        painter.line_segment([missile_ground, missile_pos],
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 100, 100, 100)));
+
+        // Draw interceptor trajectory
+        let interceptor_color = egui::Color32::from_rgb(100, 200, 255);
+        let interceptor_current = to_local(interceptor.position, interceptor.altitude_km);
+        let intercept_point = to_local(interceptor.target_position, interceptor.target_altitude_km);
+
+        // Interceptor path from origin to current position
+        let mut interceptor_points: Vec<egui::Pos2> = Vec::new();
+        let num_int_points = 15;
+        for i in 0..=num_int_points {
+            let t = (i as f64 / num_int_points as f64) * interceptor.flight_progress();
+
+            let x = intercept_point.0 * t;
+            let y = intercept_point.1 * t;
+            let z = intercept_point.2 * t;
+
+            interceptor_points.push(proj(x, y, z));
+        }
+
+        if interceptor_points.len() >= 2 {
+            painter.add(egui::Shape::line(interceptor_points, egui::Stroke::new(2.0, interceptor_color)));
+        }
+
+        // Draw interceptor current position
+        let int_pos = proj(interceptor_current.0, interceptor_current.1, interceptor_current.2);
+        painter.circle_filled(int_pos, 4.0, egui::Color32::from_rgb(100, 200, 255));
+
+        // Draw predicted intercept point
+        let intercept_screen = proj(intercept_point.0, intercept_point.1, intercept_point.2);
+
+        // Dashed line from interceptor to intercept point (predicted path)
+        let dash_color = egui::Color32::from_rgba_unmultiplied(100, 200, 255, 150);
+        painter.line_segment([int_pos, intercept_screen], egui::Stroke::new(1.0, dash_color));
+
+        // Draw intercept point marker (X)
+        let x_size = 6.0;
+        painter.line_segment(
+            [intercept_screen + egui::vec2(-x_size, -x_size), intercept_screen + egui::vec2(x_size, x_size)],
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50))
+        );
+        painter.line_segment(
+            [intercept_screen + egui::vec2(x_size, -x_size), intercept_screen + egui::vec2(-x_size, x_size)],
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50))
+        );
+
+        // Draw vertical line from intercept point to ground
+        let intercept_ground = proj(intercept_point.0, intercept_point.1, 0.0);
+        painter.line_segment([intercept_ground, intercept_screen],
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 200, 50, 80)));
+
+        // Legend
+        let legend_y = rect.max.y - 15.0;
+        let legend_x = rect.min.x + 8.0;
+
+        painter.circle_filled(egui::pos2(legend_x, legend_y), 3.0, egui::Color32::from_rgb(255, 80, 80));
+        painter.text(egui::pos2(legend_x + 8.0, legend_y), egui::Align2::LEFT_CENTER, "Missile",
+            egui::FontId::proportional(9.0), egui::Color32::from_rgb(200, 200, 200));
+
+        painter.circle_filled(egui::pos2(legend_x + 55.0, legend_y), 3.0, egui::Color32::from_rgb(100, 200, 255));
+        painter.text(egui::pos2(legend_x + 63.0, legend_y), egui::Align2::LEFT_CENTER, "Interceptor",
+            egui::FontId::proportional(9.0), egui::Color32::from_rgb(200, 200, 200));
+
+        // Stats below visualization
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(format!("Alt: {:.0}km", interceptor.target_altitude_km));
+            ui.separator();
+            ui.label(format!("Dist: {:.0}km",
+                crate::simulation::haversine_distance(unit.position, interceptor.target_position)));
+        });
+        ui.horizontal(|ui| {
+            ui.label(format!("ToI: {:.1}s",
+                (interceptor.intercept_time - self.simulation.sim_time).max(0.0)));
+            ui.separator();
+            ui.label(format!("Pk: {:.0}%", interceptor.hit_probability * 100.0));
+        });
+    }
+
+    fn render_intercept_3d_fullscreen(&mut self, ui: &mut egui::Ui) {
+        let available_rect = ui.available_rect_before_wrap();
+
+        // Allocate the entire space for the 3D view
+        let (response, painter) = ui.allocate_painter(available_rect.size(), egui::Sense::click_and_drag());
+        let rect = response.rect;
+
+        // Handle interactions
+        if response.dragged() {
+            self.isometric_state.handle_drag(response.drag_delta());
+            self.isometric_state.dragging = true;
+        } else {
+            self.isometric_state.dragging = false;
+        }
+
+        // Handle scroll for zoom
+        let scroll = ui.input(|i| i.raw_scroll_delta.y);
+        if scroll.abs() > 0.1 {
+            self.isometric_state.handle_zoom(scroll * 0.01);
+        }
+
+        // Background - dark space color
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(10, 12, 20));
+
+        // Find the focused defense unit
+        let focus_unit_id = self.isometric_state.focus_unit_id.or_else(|| {
+            match self.selection {
+                Some(Selection::DefenseUnit(id)) => Some(id),
+                _ => self.simulation.defense_units.first().map(|u| u.id),
+            }
+        });
+
+        let Some(unit_id) = focus_unit_id else {
+            // No unit to focus on - show message
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "No defense unit selected\nSelect a defense unit to view intercepts",
+                egui::FontId::proportional(18.0),
+                egui::Color32::from_rgb(150, 150, 150),
+            );
+            return;
+        };
+
+        let Some(unit) = self.simulation.defense_units.iter().find(|u| u.id == unit_id) else {
+            return;
+        };
+
+        let unit_pos = unit.position;
+        let unit_name = unit.name.clone();
+        let unit_defense_type = unit.defense_type;
+
+        // Get platform and interceptor configs for engagement envelope
+        let platform_config = self.simulation.platform_configs.get_by_defense_type(unit_defense_type);
+        let interceptor_config = self.simulation.interceptor_configs.get_by_name(&platform_config.launcher.interceptor_type);
+        let engagement_range = platform_config.launcher.engagement_range_km;
+        let min_engage_alt = interceptor_config.altitude_envelope.min_engagement_altitude_km;
+        let max_engage_alt = interceptor_config.altitude_envelope.max_engagement_altitude_km;
+
+        // Find all interceptors launched by this unit
+        let unit_interceptors: Vec<_> = self.simulation.interceptors
+            .iter()
+            .filter(|i| i.launcher_id == unit_id)
+            .collect();
+
+        // Get sensor IDs for this unit
+        let sensor_ids: Vec<EntityId> = if !unit.sensors.is_empty() {
+            unit.sensors.iter().map(|s| s.sensor_id).collect()
+        } else {
+            vec![unit_id]
+        };
+
+        // Find all missiles being TRACKED by this unit's sensors using persistent tracks
+        // This uses active_tracks which persist between radar pings with degrading quality
+        let mut tracked_with_quality: std::collections::HashMap<EntityId, f64> = std::collections::HashMap::new();
+        for track in &self.simulation.detection.active_tracks {
+            if sensor_ids.contains(&track.tracker_id) {
+                // Use the best quality if multiple sensors track the same target
+                let entry = tracked_with_quality.entry(track.target_id).or_insert(0.0);
+                *entry = entry.max(track.track_quality);
+            }
+        }
+
+        // Also include missiles being targeted by active interceptors (always show at full quality)
+        for interceptor in &unit_interceptors {
+            tracked_with_quality.entry(interceptor.target_id).or_insert(1.0);
+            // Boost quality for actively intercepted targets
+            if let Some(q) = tracked_with_quality.get_mut(&interceptor.target_id) {
+                *q = q.max(0.8);
+            }
+        }
+
+        // Get the actual missile objects with their track quality
+        let tracked_missiles: Vec<(&Missile, f64)> = self.simulation.missiles
+            .iter()
+            .filter_map(|m| {
+                tracked_with_quality.get(&m.id).map(|&quality| (m, quality))
+            })
+            .collect();
+
+        // Base scale on engagement envelope (fixed) - this prevents flickering when tracks come/go
+        let envelope_extent = engagement_range.max(max_engage_alt).max(100.0);
+        let mut max_dist = envelope_extent * 1.3; // Base margin for envelope
+
+        // Only expand view if missiles/interceptors are significantly beyond the envelope
+        for interceptor in &unit_interceptors {
+            let dist = crate::simulation::haversine_distance(unit_pos, interceptor.target_position);
+            let max_extent = dist.max(interceptor.target_altitude_km);
+            if max_extent > envelope_extent * 1.2 {
+                max_dist = max_dist.max(max_extent * 1.1);
+            }
+        }
+
+        for (missile, _quality) in &tracked_missiles {
+            let dist = crate::simulation::haversine_distance(unit_pos, missile.position);
+            let max_extent = dist.max(missile.altitude_km);
+            if max_extent > envelope_extent * 1.2 {
+                max_dist = max_dist.max(max_extent * 1.1);
+            }
+        }
+
+        // Calculate scale based on view size
+        let view_min = rect.width().min(rect.height()) as f64;
+        let scale = view_min * 0.35 / max_dist;
+        let center = rect.center();
+
+        // Helper: convert geo coords to local XY (km), Z = altitude
+        let to_local = |geo: GeoCoord, alt: f64| -> (f64, f64, f64) {
+            let dx = (geo.lon - unit_pos.lon) * 111.32 * unit_pos.lat.to_radians().cos();
+            let dy = (geo.lat - unit_pos.lat) * 111.32;
+            (dx, dy, alt)
+        };
+
+        // Helper: project 3D to 2D using isometric state
+        let proj = |x: f64, y: f64, z: f64| -> egui::Pos2 {
+            self.isometric_state.project(x, y, z, center, scale)
+        };
+
+        // Draw ground plane grid
+        let grid_color = egui::Color32::from_rgba_unmultiplied(60, 70, 90, 60);
+        let grid_extent = max_dist * 0.8;
+        let grid_lines = 5;
+        for i in -grid_lines..=grid_lines {
+            let offset = (i as f64) * grid_extent / grid_lines as f64;
+            // X lines (East-West)
+            let p1 = proj(-grid_extent, offset, 0.0);
+            let p2 = proj(grid_extent, offset, 0.0);
+            painter.line_segment([p1, p2], egui::Stroke::new(0.5, grid_color));
+            // Y lines (North-South)
+            let p1 = proj(offset, -grid_extent, 0.0);
+            let p2 = proj(offset, grid_extent, 0.0);
+            painter.line_segment([p1, p2], egui::Stroke::new(0.5, grid_color));
+        }
+
+        // Draw axes
+        let axis_len = max_dist * 0.5;
+        let origin = proj(0.0, 0.0, 0.0);
+
+        // X axis (East) - Red
+        let x_end = proj(axis_len, 0.0, 0.0);
+        painter.line_segment([origin, x_end], egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 80, 80)));
+        painter.text(x_end + egui::vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, "E",
+            egui::FontId::proportional(14.0), egui::Color32::from_rgb(200, 80, 80));
+
+        // Y axis (North) - Green
+        let y_end = proj(0.0, axis_len, 0.0);
+        painter.line_segment([origin, y_end], egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 80)));
+        painter.text(y_end + egui::vec2(0.0, -12.0), egui::Align2::CENTER_BOTTOM, "N",
+            egui::FontId::proportional(14.0), egui::Color32::from_rgb(80, 200, 80));
+
+        // Z axis (Altitude) - Blue
+        let z_end = proj(0.0, 0.0, axis_len);
+        painter.line_segment([origin, z_end], egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 255)));
+        painter.text(z_end + egui::vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, "Alt",
+            egui::FontId::proportional(14.0), egui::Color32::from_rgb(80, 150, 255));
+
+        // Draw defense unit marker at origin
+        painter.circle_filled(origin, 12.0, egui::Color32::from_rgb(80, 180, 80));
+        painter.circle_stroke(origin, 12.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+        painter.text(origin + egui::vec2(0.0, 20.0), egui::Align2::CENTER_TOP, &unit_name,
+            egui::FontId::proportional(12.0), egui::Color32::from_rgb(150, 220, 150));
+
+        // Draw 3D engagement envelope (lightly shaded yellow)
+        let envelope_fill = egui::Color32::from_rgba_unmultiplied(255, 220, 100, 25);
+        let envelope_stroke = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 80);
+        let envelope_stroke_strong = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 150);
+
+        // Draw vertical lines at cardinal points showing the envelope
+        let num_radial_lines = 16;
+        for i in 0..num_radial_lines {
+            let angle = (i as f64) * 2.0 * std::f64::consts::PI / (num_radial_lines as f64);
+            let x = engagement_range * angle.cos();
+            let y = engagement_range * angle.sin();
+
+            // Vertical line from min to max altitude at outer range
+            let bottom = proj(x, y, min_engage_alt);
+            let top = proj(x, y, max_engage_alt);
+            painter.line_segment([bottom, top], egui::Stroke::new(1.0, envelope_stroke));
+        }
+
+        // Draw horizontal circles at min and max engagement altitudes
+        let num_circle_points = 32;
+        for alt in [min_engage_alt, max_engage_alt] {
+            let mut circle_points: Vec<egui::Pos2> = Vec::new();
+            for i in 0..=num_circle_points {
+                let angle = (i as f64) * 2.0 * std::f64::consts::PI / (num_circle_points as f64);
+                let x = engagement_range * angle.cos();
+                let y = engagement_range * angle.sin();
+                circle_points.push(proj(x, y, alt));
+            }
+            // Draw as line segments for the outline
+            for j in 0..circle_points.len() - 1 {
+                painter.line_segment(
+                    [circle_points[j], circle_points[j + 1]],
+                    egui::Stroke::new(1.5, envelope_stroke_strong)
+                );
+            }
+        }
+
+        // Draw filled envelope wall segments (semi-transparent) - match the 16 radial lines
+        for i in 0..num_radial_lines {
+            let angle1 = (i as f64) * 2.0 * std::f64::consts::PI / (num_radial_lines as f64);
+            let angle2 = ((i + 1) as f64) * 2.0 * std::f64::consts::PI / (num_radial_lines as f64);
+
+            let x1 = engagement_range * angle1.cos();
+            let y1 = engagement_range * angle1.sin();
+            let x2 = engagement_range * angle2.cos();
+            let y2 = engagement_range * angle2.sin();
+
+            // Create a quad for the "wall" segment of the envelope
+            let points = vec![
+                proj(x1, y1, min_engage_alt),
+                proj(x2, y2, min_engage_alt),
+                proj(x2, y2, max_engage_alt),
+                proj(x1, y1, max_engage_alt),
+            ];
+            painter.add(egui::Shape::convex_polygon(points, envelope_fill, egui::Stroke::NONE));
+        }
+
+        // Draw the top "dome" surface as filled segments - match the 16 radial lines
+        for i in 0..num_radial_lines {
+            let angle1 = (i as f64) * 2.0 * std::f64::consts::PI / (num_radial_lines as f64);
+            let angle2 = ((i + 1) as f64) * 2.0 * std::f64::consts::PI / (num_radial_lines as f64);
+
+            let x1 = engagement_range * angle1.cos();
+            let y1 = engagement_range * angle1.sin();
+            let x2 = engagement_range * angle2.cos();
+            let y2 = engagement_range * angle2.sin();
+
+            // Triangle from center to outer edge at max altitude
+            let points = vec![
+                proj(0.0, 0.0, max_engage_alt),
+                proj(x1, y1, max_engage_alt),
+                proj(x2, y2, max_engage_alt),
+            ];
+            painter.add(egui::Shape::convex_polygon(points, envelope_fill, egui::Stroke::NONE));
+        }
+
+        // Draw missiles with track quality degradation
+        for (missile, track_quality) in &tracked_missiles {
+            let missile_origin = to_local(missile.origin, 0.0);
+            let missile_target = to_local(missile.target, 0.0);
+            let missile_current = to_local(missile.position, missile.altitude_km);
+
+            // Adjust colors based on track quality (fades as quality degrades)
+            let quality_alpha = (track_quality * 255.0) as u8;
+            let quality_alpha_half = (track_quality * 128.0) as u8;
+            let missile_path_color = egui::Color32::from_rgba_unmultiplied(255, 100, 100, quality_alpha.max(80));
+            let missile_future_color = egui::Color32::from_rgba_unmultiplied(255, 100, 100, quality_alpha_half.max(40));
+
+            let flight_prog = missile.flight_progress().clamp(0.01, 0.99);
+
+            // Back-calculate apogee from current altitude and flight progress
+            // For parabola: alt = 4 * apogee * t * (1-t)
+            // At t=flight_prog: current_alt = 4 * apogee * flight_prog * (1 - flight_prog)
+            // So: apogee = current_alt / (4 * flight_prog * (1 - flight_prog))
+            let parabola_factor = 4.0 * flight_prog * (1.0 - flight_prog);
+            let estimated_apogee = if parabola_factor > 0.01 && missile.altitude_km > 1.0 {
+                missile.altitude_km / parabola_factor
+            } else {
+                missile.altitude_km.max(50.0)
+            };
+
+            // Draw PAST trajectory (origin to current position) - solid line with arc
+            let num_past_points = 25;
+            let mut past_points: Vec<egui::Pos2> = Vec::new();
+            for i in 0..=num_past_points {
+                let t = i as f64 / num_past_points as f64; // 0 to 1 along past path
+
+                // Interpolate x,y from origin to current position
+                let x = missile_origin.0 + (missile_current.0 - missile_origin.0) * t;
+                let y = missile_origin.1 + (missile_current.1 - missile_origin.1) * t;
+
+                // Map t (0-1 of past path) to total flight progress (0 to flight_prog)
+                let total_t = t * flight_prog;
+                // Parabolic altitude - this will equal missile.altitude_km when t=1
+                let alt = estimated_apogee * 4.0 * total_t * (1.0 - total_t);
+
+                past_points.push(proj(x, y, alt.max(0.0)));
+            }
+
+            if past_points.len() >= 2 {
+                painter.add(egui::Shape::line(past_points, egui::Stroke::new(2.5, missile_path_color)));
+            }
+
+            // Draw FUTURE trajectory (current to target) - faded line
+            let num_future_points = 20;
+            let mut future_points: Vec<egui::Pos2> = Vec::new();
+            for i in 0..=num_future_points {
+                let t = i as f64 / num_future_points as f64; // 0 to 1 of remaining path
+
+                // Interpolate x,y from current position to target
+                let x = missile_current.0 + (missile_target.0 - missile_current.0) * t;
+                let y = missile_current.1 + (missile_target.1 - missile_current.1) * t;
+
+                // Map t to remaining flight (flight_prog to 1.0)
+                let total_t = flight_prog + (1.0 - flight_prog) * t;
+                let alt = estimated_apogee * 4.0 * total_t * (1.0 - total_t);
+
+                future_points.push(proj(x, y, alt.max(0.0)));
+            }
+
+            if future_points.len() >= 2 {
+                painter.add(egui::Shape::line(future_points, egui::Stroke::new(1.5, missile_future_color)));
+            }
+
+            // Draw missile current position with quality-based appearance
+            let missile_pos = proj(missile_current.0, missile_current.1, missile_current.2);
+            let marker_color = egui::Color32::from_rgba_unmultiplied(255, 80, 80, quality_alpha.max(100));
+            let marker_size = if *track_quality > 0.5 { 8.0 } else { 6.0 };
+            painter.circle_filled(missile_pos, marker_size, marker_color);
+
+            // Solid stroke for good tracks, dashed/faded for stale tracks
+            if *track_quality > 0.5 {
+                painter.circle_stroke(missile_pos, marker_size, egui::Stroke::new(1.5, egui::Color32::WHITE));
+            } else {
+                // Show uncertainty circle for degraded tracks
+                let uncertainty_radius = ((1.0 - track_quality) * 20.0) as f32; // Up to 20 pixels
+                painter.circle_stroke(
+                    missile_pos,
+                    marker_size + uncertainty_radius,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 200, 100, 80))
+                );
+            }
+
+            // Draw vertical altitude line
+            let missile_ground = proj(missile_current.0, missile_current.1, 0.0);
+            painter.line_segment([missile_ground, missile_pos],
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 100, 100, quality_alpha_half.max(60))));
+
+            // Label with track quality indicator
+            let quality_indicator = if *track_quality > 0.7 { "" }
+                else if *track_quality > 0.3 { " [FADING]" }
+                else { " [STALE]" };
+            let label_color = egui::Color32::from_rgba_unmultiplied(255, 150, 150, quality_alpha.max(120));
+            painter.text(missile_pos + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER,
+                format!("{}{}\n{:.0}km alt", missile.name, quality_indicator, missile.altitude_km),
+                egui::FontId::proportional(11.0), label_color);
+        }
+
+        // Draw interceptors
+        for interceptor in &unit_interceptors {
+            let interceptor_color = egui::Color32::from_rgb(100, 200, 255);
+            let interceptor_future_color = egui::Color32::from_rgba_unmultiplied(100, 200, 255, 120);
+            let interceptor_current = to_local(interceptor.position, interceptor.altitude_km);
+            let intercept_point = to_local(interceptor.target_position, interceptor.target_altitude_km);
+
+            // Draw PAST path: from origin (0,0,0) to current position - solid line
+            let num_past_points = 15;
+            let mut past_points: Vec<egui::Pos2> = Vec::new();
+            for i in 0..=num_past_points {
+                let t = i as f64 / num_past_points as f64;
+
+                // Linear interpolation from origin to current position
+                let x = interceptor_current.0 * t;
+                let y = interceptor_current.1 * t;
+                let z = interceptor_current.2 * t;
+
+                past_points.push(proj(x, y, z));
+            }
+
+            if past_points.len() >= 2 {
+                painter.add(egui::Shape::line(past_points, egui::Stroke::new(2.5, interceptor_color)));
+            }
+
+            // Draw interceptor current position
+            let int_pos = proj(interceptor_current.0, interceptor_current.1, interceptor_current.2);
+            painter.circle_filled(int_pos, 6.0, egui::Color32::from_rgb(100, 200, 255));
+
+            // Draw FUTURE path: from current position to predicted intercept point - dashed/faded
+            let intercept_screen = proj(intercept_point.0, intercept_point.1, intercept_point.2);
+            painter.line_segment([int_pos, intercept_screen], egui::Stroke::new(1.5, interceptor_future_color));
+
+            // X marker at intercept point
+            let x_size = 10.0;
+            painter.line_segment(
+                [intercept_screen + egui::vec2(-x_size, -x_size), intercept_screen + egui::vec2(x_size, x_size)],
+                egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 200, 50))
+            );
+            painter.line_segment(
+                [intercept_screen + egui::vec2(x_size, -x_size), intercept_screen + egui::vec2(-x_size, x_size)],
+                egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 200, 50))
+            );
+
+            // Vertical line from intercept to ground
+            let intercept_ground = proj(intercept_point.0, intercept_point.1, 0.0);
+            painter.line_segment([intercept_ground, intercept_screen],
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 200, 50, 80)));
+
+            // Vertical line from interceptor to ground
+            let int_ground = proj(interceptor_current.0, interceptor_current.1, 0.0);
+            painter.line_segment([int_ground, int_pos],
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(100, 200, 255, 80)));
+
+            // Stats label near intercept point
+            let time_to_intercept = (interceptor.intercept_time - self.simulation.sim_time).max(0.0);
+            painter.text(intercept_screen + egui::vec2(15.0, -10.0), egui::Align2::LEFT_CENTER,
+                format!("ToI: {:.1}s\nPk: {:.0}%", time_to_intercept, interceptor.hit_probability * 100.0),
+                egui::FontId::proportional(11.0), egui::Color32::from_rgb(255, 220, 100));
+        }
+
+        // Draw overlay stats panel
+        let stats_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(10.0, 10.0),
+            egui::vec2(220.0, 160.0)
+        );
+        painter.rect_filled(stats_rect, 6.0, egui::Color32::from_rgba_unmultiplied(20, 25, 35, 200));
+        painter.rect_stroke(stats_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 70, 90)), egui::StrokeKind::Inside);
+
+        let text_start = stats_rect.min + egui::vec2(10.0, 10.0);
+        painter.text(text_start, egui::Align2::LEFT_TOP,
+            "INTERCEPT VIEW",
+            egui::FontId::proportional(14.0), egui::Color32::from_rgb(200, 200, 200));
+
+        painter.text(text_start + egui::vec2(0.0, 22.0), egui::Align2::LEFT_TOP,
+            format!("Unit: {}", unit_name),
+            egui::FontId::proportional(12.0), egui::Color32::from_rgb(150, 220, 150));
+
+        painter.text(text_start + egui::vec2(0.0, 40.0), egui::Align2::LEFT_TOP,
+            format!("Active Interceptors: {}", unit_interceptors.len()),
+            egui::FontId::proportional(12.0), egui::Color32::from_rgb(100, 200, 255));
+
+        painter.text(text_start + egui::vec2(0.0, 58.0), egui::Align2::LEFT_TOP,
+            format!("Tracked Threats: {}", tracked_missiles.len()),
+            egui::FontId::proportional(12.0), egui::Color32::from_rgb(255, 150, 150));
+
+        // Engagement envelope info
+        painter.text(text_start + egui::vec2(0.0, 80.0), egui::Align2::LEFT_TOP,
+            format!("Envelope: {:.0}km range", engagement_range),
+            egui::FontId::proportional(10.0), egui::Color32::from_rgb(255, 220, 100));
+
+        painter.text(text_start + egui::vec2(0.0, 95.0), egui::Align2::LEFT_TOP,
+            format!("Alt: {:.0}-{:.0}km", min_engage_alt, max_engage_alt),
+            egui::FontId::proportional(10.0), egui::Color32::from_rgb(255, 220, 100));
+
+        painter.text(text_start + egui::vec2(0.0, 115.0), egui::Align2::LEFT_TOP,
+            format!("Azimuth: {:.0}°  Elev: {:.0}°", self.isometric_state.azimuth_deg, self.isometric_state.elevation_deg),
+            egui::FontId::proportional(10.0), egui::Color32::from_rgb(120, 120, 140));
+
+        painter.text(text_start + egui::vec2(0.0, 130.0), egui::Align2::LEFT_TOP,
+            format!("Zoom: {:.1}x", self.isometric_state.zoom),
+            egui::FontId::proportional(10.0), egui::Color32::from_rgb(120, 120, 140));
+
+        // Legend in bottom right
+        let legend_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.max.x - 180.0, rect.max.y - 110.0),
+            egui::vec2(170.0, 100.0)
+        );
+        painter.rect_filled(legend_rect, 6.0, egui::Color32::from_rgba_unmultiplied(20, 25, 35, 200));
+        painter.rect_stroke(legend_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 70, 90)), egui::StrokeKind::Inside);
+
+        let legend_start = legend_rect.min + egui::vec2(10.0, 10.0);
+
+        // Missile legend
+        painter.circle_filled(legend_start + egui::vec2(5.0, 5.0), 5.0, egui::Color32::from_rgb(255, 80, 80));
+        painter.text(legend_start + egui::vec2(15.0, 5.0), egui::Align2::LEFT_CENTER, "Tracked Missile",
+            egui::FontId::proportional(11.0), egui::Color32::from_rgb(200, 200, 200));
+
+        // Interceptor legend
+        painter.circle_filled(legend_start + egui::vec2(5.0, 25.0), 5.0, egui::Color32::from_rgb(100, 200, 255));
+        painter.text(legend_start + egui::vec2(15.0, 25.0), egui::Align2::LEFT_CENTER, "Interceptor",
+            egui::FontId::proportional(11.0), egui::Color32::from_rgb(200, 200, 200));
+
+        // Intercept point legend
+        let x_pos = legend_start + egui::vec2(5.0, 45.0);
+        painter.line_segment([x_pos + egui::vec2(-4.0, -4.0), x_pos + egui::vec2(4.0, 4.0)],
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50)));
+        painter.line_segment([x_pos + egui::vec2(4.0, -4.0), x_pos + egui::vec2(-4.0, 4.0)],
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50)));
+        painter.text(legend_start + egui::vec2(15.0, 45.0), egui::Align2::LEFT_CENTER, "Intercept Point",
+            egui::FontId::proportional(11.0), egui::Color32::from_rgb(200, 200, 200));
+
+        // Engagement envelope legend
+        painter.rect_filled(
+            egui::Rect::from_min_size(legend_start + egui::vec2(2.0, 62.0), egui::vec2(8.0, 8.0)),
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(255, 220, 100, 60)
+        );
+        painter.rect_stroke(
+            egui::Rect::from_min_size(legend_start + egui::vec2(2.0, 62.0), egui::vec2(8.0, 8.0)),
+            2.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 50)),
+            egui::StrokeKind::Inside
+        );
+        painter.text(legend_start + egui::vec2(15.0, 66.0), egui::Align2::LEFT_CENTER, "Engagement Envelope",
+            egui::FontId::proportional(11.0), egui::Color32::from_rgb(200, 200, 200));
+
+        // Defense unit legend
+        painter.circle_filled(legend_start + egui::vec2(5.0, 85.0), 5.0, egui::Color32::from_rgb(80, 180, 80));
+        painter.text(legend_start + egui::vec2(15.0, 85.0), egui::Align2::LEFT_CENTER, "Defense Unit",
+            egui::FontId::proportional(11.0), egui::Color32::from_rgb(200, 200, 200));
+
+        // Controls hint at bottom
+        let hint_pos = egui::pos2(rect.center().x, rect.max.y - 20.0);
+        painter.text(hint_pos, egui::Align2::CENTER_BOTTOM,
+            "Drag to rotate • Scroll to zoom",
+            egui::FontId::proportional(11.0), egui::Color32::from_rgb(100, 100, 120));
+
+        // If no tracked missiles, show a message
+        if tracked_missiles.is_empty() {
+            painter.text(rect.center() + egui::vec2(0.0, 50.0), egui::Align2::CENTER_CENTER,
+                "No threats currently being tracked",
+                egui::FontId::proportional(16.0), egui::Color32::from_rgb(120, 120, 140));
+        }
     }
 
     fn render_satellite_info(&self, ui: &mut egui::Ui, satellite: &Satellite) {
@@ -4232,7 +5066,136 @@ impl App {
                     SensorType::Both => "Radar + IR",
                 });
                 ui.end_row();
+
+                ui.label("Facing:");
+                ui.label(format!("{:.0}°", station.facing_deg));
+                ui.end_row();
+
+                // Get sensor config for additional info
+                let config = self.simulation.sensor_configs.get_by_name(&station.sensor_config_name);
+
+                ui.label("Radar Type:");
+                ui.label(format!("{:?}", config.detection.radar_type));
+                ui.end_row();
+
+                ui.label("Radar Band:");
+                ui.label(format!("{:?}", config.detection.radar_band));
+                ui.end_row();
             });
+
+        // Tracking Status Section
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Tracking Status");
+        ui.add_space(4.0);
+
+        let config = self.simulation.sensor_configs.get_by_name(&station.sensor_config_name);
+
+        if let Some(mode_state) = self.simulation.detection.radar_mode_states.get(&station.id) {
+            egui::Grid::new("radar_tracking_grid")
+                .num_columns(2)
+                .spacing([10.0, 4.0])
+                .show(ui, |ui| {
+                    // Mode breakdown
+                    ui.label("Fire Control:");
+                    let fc = mode_state.stats.last_fc_count;
+                    let fc_max = config.tracking.max_fire_control_tracks;
+                    let fc_color = if fc >= fc_max {
+                        egui::Color32::from_rgb(255, 100, 100)
+                    } else if fc > 0 {
+                        egui::Color32::from_rgb(255, 200, 100)
+                    } else {
+                        egui::Color32::GRAY
+                    };
+                    ui.colored_label(fc_color, format!("{}/{}", fc, fc_max));
+                    ui.end_row();
+
+                    ui.label("Tracking:");
+                    ui.label(format!("{}", mode_state.stats.last_track_count));
+                    ui.end_row();
+
+                    ui.label("Search:");
+                    ui.label(format!("{}", mode_state.stats.last_search_count));
+                    ui.end_row();
+
+                    ui.label("Total Tracks:");
+                    let total = mode_state.target_assignments.len();
+                    let max = config.tracking.max_simultaneous_tracks;
+                    let capacity_pct = (total as f64 / max as f64) * 100.0;
+                    let cap_color = if capacity_pct > 90.0 {
+                        egui::Color32::from_rgb(255, 100, 100)
+                    } else if capacity_pct > 70.0 {
+                        egui::Color32::from_rgb(255, 200, 100)
+                    } else {
+                        egui::Color32::from_rgb(100, 200, 100)
+                    };
+                    ui.colored_label(cap_color, format!("{}/{} ({:.0}%)", total, max, capacity_pct));
+                    ui.end_row();
+
+                    // Time budget
+                    ui.label("Time Budget:");
+                    let util = mode_state.stats.last_time_budget_utilization;
+                    let time_color = if util > 0.95 {
+                        egui::Color32::from_rgb(255, 100, 100)
+                    } else if util > 0.75 {
+                        egui::Color32::from_rgb(255, 200, 100)
+                    } else {
+                        egui::Color32::from_rgb(100, 200, 100)
+                    };
+                    ui.colored_label(time_color, format!("{:.0}%", util * 100.0));
+                    ui.end_row();
+                });
+
+            // List tracked targets
+            if !mode_state.target_assignments.is_empty() {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Tracked Targets:").strong());
+
+                let mut targets: Vec<_> = mode_state.target_assignments.iter().collect();
+                targets.sort_by_key(|(_, (mode, _))| match mode {
+                    RadarMode::FireControl => 0,
+                    RadarMode::Track => 1,
+                    RadarMode::Search => 2,
+                });
+
+                for (target_id, (mode, _band)) in targets.iter().take(8) {
+                    let target_name = self.simulation.missiles.iter()
+                        .find(|m| m.id == **target_id)
+                        .map(|m| m.name.as_str())
+                        .unwrap_or("Unknown");
+
+                    let mode_str = match mode {
+                        RadarMode::FireControl => "FC",
+                        RadarMode::Track => "TK",
+                        RadarMode::Search => "SR",
+                    };
+
+                    let mode_color = match mode {
+                        RadarMode::FireControl => egui::Color32::from_rgb(255, 150, 50),
+                        RadarMode::Track => egui::Color32::from_rgb(255, 255, 100),
+                        RadarMode::Search => egui::Color32::from_rgb(100, 220, 255),
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.colored_label(mode_color, format!("[{}]", mode_str));
+                        ui.label(target_name);
+                    });
+                }
+
+                if targets.len() > 8 {
+                    ui.label(format!("  ...and {} more", targets.len() - 8));
+                }
+            }
+        } else {
+            // No mode state - simple stats
+            let detection_count = self.simulation.detection.detections_for_sensor(station.id).len();
+            let track_count = self.simulation.detection.active_tracks.iter()
+                .filter(|t| t.tracker_id == station.id)
+                .count();
+
+            ui.label(format!("Detections: {}", detection_count));
+            ui.label(format!("Tracks: {}", track_count));
+        }
     }
 
     fn render_radar_stats_window(&self, ctx: &egui::Context) {
@@ -4268,9 +5231,9 @@ impl App {
                                 ui.label("Capacity:");
                                 ui.label(format!(
                                     "{}/{} ({:.0}%)",
-                                    mode_state.target_modes.len(),
+                                    mode_state.target_assignments.len(),
                                     config.tracking.max_simultaneous_tracks,
-                                    (mode_state.target_modes.len() as f64 / config.tracking.max_simultaneous_tracks as f64) * 100.0
+                                    (mode_state.target_assignments.len() as f64 / config.tracking.max_simultaneous_tracks as f64) * 100.0
                                 ));
                             });
 
@@ -4331,9 +5294,9 @@ impl App {
                                 ui.label("Capacity:");
                                 ui.label(format!(
                                     "{}/{} ({:.0}%)",
-                                    mode_state.target_modes.len(),
+                                    mode_state.target_assignments.len(),
                                     config.tracking.max_simultaneous_tracks,
-                                    (mode_state.target_modes.len() as f64 / config.tracking.max_simultaneous_tracks as f64) * 100.0
+                                    (mode_state.target_assignments.len() as f64 / config.tracking.max_simultaneous_tracks as f64) * 100.0
                                 ));
                             });
 
@@ -4414,6 +5377,13 @@ impl eframe::App for App {
                     self.globe_state.center_lat = self.viewport.center.lat;
                     self.globe_state.center_lon = self.viewport.center.lon;
                 }
+                if ui.selectable_label(self.view_mode == ViewMode::Intercept3D, "Intercept").clicked() {
+                    self.view_mode = ViewMode::Intercept3D;
+                    // Set focus to selected defense unit if any
+                    if let Some(Selection::DefenseUnit(id)) = self.selection {
+                        self.isometric_state.focus_unit_id = Some(id);
+                    }
+                }
                 ui.separator();
 
                 // View presets dropdown
@@ -4471,6 +5441,30 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.show_trajectories, "Paths");
                 ui.checkbox(&mut self.show_tracking_lines, "Tracks");
                 ui.checkbox(&mut self.show_radar_stats, "Radar Stats");
+
+                ui.separator();
+
+                // Map style selector
+                ui.horizontal(|ui| {
+                    ui.label("Map:");
+                    let current_style = self.tile_cache.style();
+                    egui::ComboBox::from_id_salt("map_style")
+                        .selected_text(current_style.display_name())
+                        .show_ui(ui, |ui| {
+                            for style in [
+                                MapStyle::StreetsLight,
+                                MapStyle::StreetsDark,
+                                MapStyle::Basic,
+                                MapStyle::BasicDark,
+                                MapStyle::Toner,
+                                MapStyle::Satellite,
+                            ] {
+                                if ui.selectable_label(current_style == style, style.display_name()).clicked() {
+                                    self.tile_cache.set_style(style);
+                                }
+                            }
+                        });
+                });
 
                 ui.separator();
                 if ui.button("Reset View").clicked() {

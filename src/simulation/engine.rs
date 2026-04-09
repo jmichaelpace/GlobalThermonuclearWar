@@ -8,6 +8,7 @@ use crate::simulation::detection::DetectionSystem;
 use crate::simulation::entities::*;
 use crate::simulation::physics::{haversine_distance, interpolate_great_circle, BallisticTrajectory, FlightPhase};
 use rand::Rng;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Time scale options for simulation speed
@@ -70,8 +71,8 @@ pub struct SimulationEngine {
     pub radar_stations: Vec<RadarStation>,
     /// All interceptors in flight
     pub interceptors: Vec<Interceptor>,
-    /// Cached trajectories for missiles
-    trajectories: Vec<(EntityId, BallisticTrajectory)>,
+    /// Cached trajectories for missiles (HashMap for O(1) lookup)
+    trajectories: HashMap<EntityId, BallisticTrajectory>,
     /// Detection system for tracking sensors and targets
     pub detection: DetectionSystem,
     /// Track interceptors in flight per target (for salvo fire)
@@ -138,7 +139,7 @@ impl SimulationEngine {
             satellites: Vec::new(),
             radar_stations: Vec::new(),
             interceptors: Vec::new(),
-            trajectories: Vec::new(),
+            trajectories: HashMap::new(),
             detection: DetectionSystem::new(),
             interceptors_per_target: std::collections::HashMap::new(),
             salvo_size: 2, // Default: fire 2 interceptors per target
@@ -212,7 +213,7 @@ impl SimulationEngine {
         missile.rcs_terminal_dbsm = config.radar_signature.rcs_terminal_dbsm;
 
         self.missiles.push(missile);
-        self.trajectories.push((id, trajectory));
+        self.trajectories.insert(id, trajectory);
 
         id
     }
@@ -266,7 +267,7 @@ impl SimulationEngine {
         missile.rcs_terminal_dbsm = config.radar_signature.rcs_terminal_dbsm;
 
         self.missiles.push(missile);
-        self.trajectories.push((id, trajectory));
+        self.trajectories.insert(id, trajectory);
 
         id
     }
@@ -281,7 +282,31 @@ impl SimulationEngine {
         interceptors: u32,
     ) -> EntityId {
         let id = self.new_id();
-        let unit = DefenseUnit::new(id, name, affiliation, position, defense_type, interceptors);
+        let mut unit = DefenseUnit::new(id, name, affiliation, position, defense_type, interceptors);
+
+        // Initialize multi-sensor support from platform config
+        let platform_config = self.platform_configs.get_by_defense_type(defense_type);
+        let platform_sensors = platform_config.launcher.get_sensors();
+
+        // Create runtime sensor instances with unique IDs
+        for sensor_config in platform_sensors {
+            let sensor_id = self.new_id();
+
+            // Get sensor detection config to determine coverage
+            let detection_config = self.sensor_configs.get_by_name(&sensor_config.config_name);
+
+            let azimuth_coverage = sensor_config.azimuth_coverage_override_deg
+                .unwrap_or(detection_config.detection.azimuth_coverage_deg);
+
+            unit.sensors.push(DefenseUnitSensor {
+                sensor_id,
+                config_name: sensor_config.config_name.clone(),
+                role: sensor_config.role,
+                azimuth_center_deg: sensor_config.azimuth_center_deg,
+                azimuth_coverage_deg: azimuth_coverage,
+            });
+        }
+
         self.defense_units.push(unit);
         id
     }
@@ -315,6 +340,37 @@ impl SimulationEngine {
         id
     }
 
+    /// Add a radar station with explicit sensor configuration
+    pub fn add_radar_station_with_config(
+        &mut self,
+        name: String,
+        affiliation: Affiliation,
+        position: GeoCoord,
+        detection_range_km: f64,
+        sensor_config: Option<String>,
+        facing_deg: Option<f64>,
+    ) -> EntityId {
+        let id = self.new_id();
+        let mut station = RadarStation::new(id, name, affiliation, position, detection_range_km);
+
+        // Apply explicit sensor config if provided
+        if let Some(config_name) = sensor_config {
+            station.sensor_config_name = config_name;
+        }
+
+        // Apply facing direction if provided
+        if let Some(facing) = facing_deg {
+            station.facing_deg = facing;
+        }
+
+        // Look up sensor config to set azimuth coverage
+        let sensor_config = self.sensor_configs.get_by_name(&station.sensor_config_name);
+        station.azimuth_coverage_deg = sensor_config.detection.azimuth_coverage_deg;
+
+        self.radar_stations.push(station);
+        id
+    }
+
     /// Update the simulation by a real-time delta (in seconds)
     pub fn update(&mut self, real_dt: f64) {
         let sim_dt = real_dt * self.time_scale.multiplier();
@@ -328,10 +384,8 @@ impl SimulationEngine {
         // Update all missiles
         let sim_time = self.sim_time;
         for missile in &mut self.missiles {
-            // Find the trajectory for this missile
-            let trajectory = self.trajectories.iter()
-                .find(|(id, _)| *id == missile.id)
-                .map(|(_, t)| t);
+            // Find the trajectory for this missile (O(1) HashMap lookup)
+            let trajectory = self.trajectories.get(&missile.id);
             Self::update_missile(missile, sim_time, trajectory);
         }
 
@@ -573,7 +627,16 @@ impl SimulationEngine {
                 continue;
             }
 
-            let detections = self.detection.detections_for_sensor(unit.id);
+            // Collect detections from all of this unit's sensors
+            let detections: Vec<_> = if !unit.sensors.is_empty() {
+                // Multi-sensor platform: gather detections from all sensors
+                unit.sensors.iter()
+                    .flat_map(|s| self.detection.detections_for_sensor(s.sensor_id))
+                    .collect()
+            } else {
+                // Legacy single-sensor: use unit.id (fallback)
+                self.detection.detections_for_sensor(unit.id)
+            };
             let mut unit_launches_this_cycle = 0;
             let max_launches_per_cycle = (self.salvo_size * 4).min(unit.interceptors_remaining) as usize;
 
@@ -750,9 +813,8 @@ impl SimulationEngine {
         missile: &Missile,
     ) -> Option<(f64, GeoCoord, f64)> {
         // Use the stored trajectory (created with missile config values) if available
-        let trajectory = self.trajectories.iter()
-            .find(|(id, _)| *id == missile.id)
-            .map(|(_, t)| t.clone())
+        let trajectory = self.trajectories.get(&missile.id)
+            .cloned()
             .unwrap_or_else(|| BallisticTrajectory::new(missile.origin, missile.target));
 
         // Time remaining until missile impact
@@ -915,7 +977,7 @@ impl SimulationEngine {
         target_id: EntityId,
     ) -> Option<(f64, GeoCoord, f64)> {
         // 1. Get fused sensor track - if no track, cannot engage
-        let defense_unit_ids: Vec<EntityId> = self.defense_units.iter().map(|u| u.id).collect();
+        let defense_unit_ids: std::collections::HashSet<EntityId> = self.defense_units.iter().map(|u| u.id).collect();
         let fused_track = self.detection.get_fused_track(target_id, &defense_unit_ids)?;
 
         // 2. Require minimum track quality and recent update
@@ -1234,12 +1296,9 @@ impl SimulationEngine {
         }
     }
 
-    /// Get trajectory for a missile
+    /// Get trajectory for a missile (O(1) HashMap lookup)
     pub fn get_trajectory(&self, missile_id: EntityId) -> Option<&BallisticTrajectory> {
-        self.trajectories
-            .iter()
-            .find(|(id, _)| *id == missile_id)
-            .map(|(_, t)| t)
+        self.trajectories.get(&missile_id)
     }
 
     /// Set the time scale
