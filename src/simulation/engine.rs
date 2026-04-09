@@ -1084,6 +1084,7 @@ impl SimulationEngine {
     }
 
     /// Calculate intercept solution using predicted trajectory from filtered estimates
+    /// Prefers earliest possible intercept (at maximum range) to allow follow-up shots
     fn calculate_intercept_from_prediction(
         &self,
         unit: &DefenseUnit,
@@ -1096,37 +1097,104 @@ impl SimulationEngine {
             return None;
         }
 
-        // Get current velocity for intercept estimation
-        let velocity = trajectory.target; // direction of travel
-        let ground_speed_estimate = if let Some(origin_to_target) = Some(haversine_distance(trajectory.origin, trajectory.target)) {
-            origin_to_target / trajectory.flight_time_sec
-        } else {
-            5.0 // Default 5 km/s for ballistic missiles
-        };
+        let interceptor_config = self.get_interceptor_config_for_unit(unit);
+        let platform_config = self.get_platform_config(unit.defense_type);
+        let max_engagement_range = platform_config.launcher.engagement_range_km;
+        let min_alt = interceptor_config.altitude_envelope.min_engagement_altitude_km;
+        let max_alt = interceptor_config.altitude_envelope.max_engagement_altitude_km;
+        let avg_interceptor_speed = self.interceptor_avg_speed(unit.defense_type);
 
-        // Initial guess using average interceptor speed
-        let avg_speed = self.interceptor_avg_speed(unit.defense_type);
-        let current_pos_estimate = trajectory.position_at(prediction.current_progress).0;
-        let initial_range = haversine_distance(unit.position, current_pos_estimate);
-        let closing_speed = avg_speed + ground_speed_estimate * 0.5;
-        let mut t_intercept = initial_range / closing_speed;
+        // Scan trajectory from early to late to find EARLIEST valid intercept
+        // This maximizes standoff distance and allows time for follow-up shots
+        let scan_steps = 40;
+        let time_step = (time_to_impact - 5.0).max(1.0) / scan_steps as f64;
 
-        // Iterative refinement
-        let mut best_solution: Option<(f64, GeoCoord, f64, f64)> = None;
-        let mut best_error = f64::MAX;
+        let mut earliest_solution: Option<(f64, GeoCoord, f64, f64)> = None;
+        let mut earliest_intercept_time = f64::MAX;
 
-        for iteration in 0..20 {
-            // Where will target be at time t_intercept from now?
-            let future_progress = prediction.current_progress + t_intercept / trajectory.flight_time_sec;
+        for step in 0..scan_steps {
+            let candidate_time = (step as f64 + 0.5) * time_step;
 
-            if future_progress >= 0.98 {
-                t_intercept *= 0.7;
+            // Where will target be at this time?
+            let future_progress = prediction.current_progress + candidate_time / trajectory.flight_time_sec;
+            if future_progress >= 0.98 || future_progress < prediction.current_progress {
                 continue;
             }
 
-            let (predicted_pos, predicted_alt) = trajectory.position_at(future_progress);
+            let (target_pos, target_alt) = trajectory.position_at(future_progress);
+            let dist_to_target = haversine_distance(unit.position, target_pos);
 
-            // Calculate interceptor flight time to this point
+            // Check if this point is within engagement envelope
+            let alt_ok = target_alt >= min_alt && target_alt <= max_alt;
+            let range_ok = dist_to_target <= max_engagement_range;
+            let time_ok = candidate_time <= time_to_impact - 3.0;
+
+            if !alt_ok || !range_ok || !time_ok {
+                continue;
+            }
+
+            // Calculate actual interceptor flight time to this point
+            let interceptor_flight_time = self.calculate_flight_time(
+                unit.defense_type,
+                unit.position,
+                target_pos,
+                target_alt,
+            );
+
+            // Check if interceptor can reach this point in time
+            // Target arrives at candidate_time, interceptor must arrive at same time or earlier
+            let timing_margin = candidate_time - interceptor_flight_time;
+
+            if timing_margin >= 0.0 && timing_margin < 30.0 {
+                // Valid intercept - interceptor arrives before or with target
+                // Refine the solution with iterative solver starting from this point
+                if let Some(refined) = self.refine_intercept_solution(
+                    unit, prediction, candidate_time, avg_interceptor_speed
+                ) {
+                    let (refined_time, refined_pos, refined_alt, uncertainty) = refined;
+
+                    // Keep the earliest valid intercept
+                    if refined_time < earliest_intercept_time {
+                        earliest_intercept_time = refined_time;
+                        earliest_solution = Some(refined);
+                    }
+
+                    // If we found a good early solution, we can stop scanning
+                    // (first valid hit in forward scan is likely optimal)
+                    if step < scan_steps / 2 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        earliest_solution
+    }
+
+    /// Refine an intercept solution starting from an initial guess
+    fn refine_intercept_solution(
+        &self,
+        unit: &DefenseUnit,
+        prediction: &TrackPrediction,
+        initial_time: f64,
+        _avg_interceptor_speed: f64,
+    ) -> Option<(f64, GeoCoord, f64, f64)> {
+        let trajectory = &prediction.trajectory;
+        let time_to_impact = prediction.time_to_impact_sec;
+        let interceptor_config = self.get_interceptor_config_for_unit(unit);
+        let platform_config = self.get_platform_config(unit.defense_type);
+
+        let mut t_intercept = initial_time;
+        let mut best_solution: Option<(f64, GeoCoord, f64, f64)> = None;
+        let mut best_error = f64::MAX;
+
+        for iteration in 0..10 {
+            let future_progress = prediction.current_progress + t_intercept / trajectory.flight_time_sec;
+            if future_progress >= 0.98 {
+                break;
+            }
+
+            let (predicted_pos, predicted_alt) = trajectory.position_at(future_progress);
             let t_required = self.calculate_flight_time(
                 unit.defense_type,
                 unit.position,
@@ -1137,89 +1205,32 @@ impl SimulationEngine {
             let timing_error = t_required - t_intercept;
             let abs_error = timing_error.abs();
 
-            // Track best solution
             let dist_to_intercept = haversine_distance(unit.position, predicted_pos);
-            if abs_error < best_error {
-                let interceptor_config = self.get_interceptor_config_for_unit(unit);
-                let platform_config = self.get_platform_config(unit.defense_type);
-                let alt_ok = predicted_alt >= interceptor_config.altitude_envelope.min_engagement_altitude_km
-                    && predicted_alt <= interceptor_config.altitude_envelope.max_engagement_altitude_km;
-                let range_ok = dist_to_intercept <= platform_config.launcher.engagement_range_km;
-                let time_ok = t_intercept <= time_to_impact - 3.0;
-
-                if alt_ok && range_ok && time_ok {
-                    best_error = abs_error;
-                    // Calculate uncertainty at intercept point
-                    let uncertainty_at_intercept = prediction.uncertainty.uncertainty_at_time(t_intercept);
-                    best_solution = Some((t_required, predicted_pos, predicted_alt, uncertainty_at_intercept));
-                }
-            }
-
-            if abs_error < 1.0 {
-                if let Some(solution) = best_solution {
-                    return Some(solution);
-                }
-            }
-
-            let adjustment = if iteration < 10 {
-                timing_error * 0.7
-            } else {
-                timing_error * 0.4
-            };
-            t_intercept += adjustment;
-
-            let max_time = (time_to_impact - 5.0).max(5.0);
-            t_intercept = t_intercept.clamp(2.0, max_time);
-        }
-
-        // Return best solution if good enough
-        if let Some(solution) = best_solution {
-            if best_error < 5.0 {
-                return Some(solution);
-            }
-        }
-
-        // Fallback scan
-        for step in 1..20 {
-            let future_time = step as f64 * 5.0;
-            if future_time > time_to_impact - 5.0 {
-                break;
-            }
-
-            let future_progress = prediction.current_progress + future_time / trajectory.flight_time_sec;
-            if future_progress >= 0.98 {
-                break;
-            }
-
-            let (predicted_pos, predicted_alt) = trajectory.position_at(future_progress);
-
-            let interceptor_config = self.get_interceptor_config_for_unit(unit);
-            let platform_config = self.get_platform_config(unit.defense_type);
             let alt_ok = predicted_alt >= interceptor_config.altitude_envelope.min_engagement_altitude_km
                 && predicted_alt <= interceptor_config.altitude_envelope.max_engagement_altitude_km;
-            if !alt_ok {
-                continue;
+            let range_ok = dist_to_intercept <= platform_config.launcher.engagement_range_km;
+            let time_ok = t_intercept <= time_to_impact - 3.0;
+
+            if alt_ok && range_ok && time_ok && abs_error < best_error {
+                best_error = abs_error;
+                let uncertainty = prediction.uncertainty.uncertainty_at_time(t_intercept);
+                best_solution = Some((t_required, predicted_pos, predicted_alt, uncertainty));
             }
 
-            let dist = haversine_distance(unit.position, predicted_pos);
-            if dist > platform_config.launcher.engagement_range_km {
-                continue;
+            if abs_error < 0.5 {
+                break; // Converged
             }
 
-            let t_flight = self.calculate_flight_time(
-                unit.defense_type,
-                unit.position,
-                predicted_pos,
-                predicted_alt,
-            );
-
-            if t_flight <= future_time + 2.0 {
-                let uncertainty_at_intercept = prediction.uncertainty.uncertainty_at_time(future_time);
-                return Some((t_flight, predicted_pos, predicted_alt, uncertainty_at_intercept));
-            }
+            // Adjust toward convergence
+            t_intercept += timing_error * 0.6;
+            t_intercept = t_intercept.clamp(2.0, time_to_impact - 3.0);
         }
 
-        None
+        if best_error < 3.0 {
+            best_solution
+        } else {
+            None
+        }
     }
 
     /// Calculate flight time for interceptor using kinematics model
