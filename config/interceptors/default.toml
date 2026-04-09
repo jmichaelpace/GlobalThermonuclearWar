@@ -1,24 +1,44 @@
+# System identification and description
 [system]
+# Official interceptor designation
 name = "Generic Interceptor"
+# Full system name and role
 description = "Default interceptor configuration"
 
+# Altitude constraints for engagement
 [altitude_envelope]
+# Minimum altitude where intercepts can occur (km) - below this, out of envelope
 min_engagement_altitude_km = 10.0
+# Maximum altitude where intercepts can occur (km) - above this, out of envelope
 max_engagement_altitude_km = 100.0
 
+# Interceptor flight performance characteristics
 [kinematics]
+# Duration of powered boost phase (seconds)
 boost_duration_sec = 10.0
+# Acceleration during boost phase (g-forces, 1g = 9.81 m/s²)
 boost_acceleration_g = 15.0
+# Maximum velocity achieved by interceptor (km/s)
 max_velocity_km_s = 2.0
+# Maximum g-force for terminal maneuvering to hit target (g-forces)
 terminal_maneuver_g = 25.0
+# Altitude at which boost phase ends and coast begins (km)
 burnout_altitude_km = 20.0
+# Average speed over entire flight (km/s) - used for quick time estimates
 average_speed_km_s = 1.5
 
+# Engagement effectiveness parameters
 [engagement]
+# Base probability of successful intercept if geometry is good (0.0-1.0)
 hit_probability = 0.70
+# Weight factor for terminal homing accuracy (0.0-1.0, higher = better terminal guidance)
 terminal_blend_factor = 0.30
 
+# Kill vehicle parameters
 [kill_envelope]
+# Range at which seeker can acquire and track target (km)
 seeker_range_km = 30.0
+# Effective radius for kinetic kill (km) - how close interceptor must pass
 kill_radius_km = 5.0
+# Base probability of kill given successful intercept (0.0-1.0)
 base_pk = 0.70

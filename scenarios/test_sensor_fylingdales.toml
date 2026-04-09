@@ -1,0 +1,70 @@
+# Fylingdales Radar Test Scenario
+# RAF Fylingdales, UK - BMEWS (Ballistic Missile Early Warning System)
+# Detection range: ~3000km, UHF phased-array
+
+[metadata]
+id = "test_sensor_fylingdales"
+name = "Fylingdales BMEWS Test"
+description = "RAF Fylingdales early warning radar test (UK)"
+region = "Europe"
+center_lat = 54.4
+center_lon = -0.7
+zoom = 3.0
+
+# Fylingdales radar (North Yorkshire, UK)
+[[radar_stations]]
+name = "Fylingdales BMEWS"
+affiliation = "Friendly"
+lat = 54.4
+lon = -0.7
+range_km = 3000.0
+
+# MRBM - ~1000km from radar
+[[missiles]]
+name = "MRBM Near"
+affiliation = "Hostile"
+origin_lat = 55.8
+origin_lon = 37.6
+target_lat = 52.5
+target_lon = 13.4
+launch_delay_sec = 20.0
+
+# IRBM - ~1800km from radar
+[[missiles]]
+name = "IRBM Mid"
+affiliation = "Hostile"
+origin_lat = 55.8
+origin_lon = 37.6
+target_lat = 48.8
+target_lon = 2.3
+launch_delay_sec = 40.0
+
+# ICBM - ~2500km from radar
+[[missiles]]
+name = "ICBM Far"
+affiliation = "Hostile"
+origin_lat = 60.0
+origin_lon = 50.0
+target_lat = 51.5
+target_lon = -0.1
+launch_delay_sec = 60.0
+
+# ICBM - ~3000km from radar (at limit)
+[[missiles]]
+name = "ICBM Limit"
+affiliation = "Hostile"
+origin_lat = 65.0
+origin_lon = 60.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 80.0
+
+# Beyond range - ~3500km
+[[missiles]]
+name = "ICBM Beyond"
+affiliation = "Hostile"
+origin_lat = 70.0
+origin_lon = 70.0
+target_lat = 38.9
+target_lon = -77.0
+launch_delay_sec = 100.0

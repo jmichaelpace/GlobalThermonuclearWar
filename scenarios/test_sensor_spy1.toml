@@ -1,0 +1,70 @@
+# AN/SPY-1 Radar Test Scenario
+# AEGIS SPY-1D phased-array radar
+# Detection range: ~400km volume search, S-band
+
+[metadata]
+id = "test_sensor_spy1"
+name = "AN/SPY-1 Radar Test"
+description = "AEGIS AN/SPY-1D radar volume search and tracking test"
+region = "Pacific"
+center_lat = 35.0
+center_lon = 140.0
+zoom = 5.0
+
+# SPY-1 radar (AEGIS destroyer)
+[[radar_stations]]
+name = "AN/SPY-1D (DDG)"
+affiliation = "Friendly"
+lat = 35.0
+lon = 140.0
+range_km = 400.0
+
+# SRBM - ~150km from radar, apogee ~50km
+[[missiles]]
+name = "SRBM Close"
+affiliation = "Hostile"
+origin_lat = 36.0
+origin_lon = 141.5
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 10.0
+
+# MRBM - ~250km from radar, apogee ~150km
+[[missiles]]
+name = "MRBM Near"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 143.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 25.0
+
+# MRBM - ~350km from radar, apogee ~200km
+[[missiles]]
+name = "MRBM Mid"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 145.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 40.0
+
+# IRBM - ~400km from radar (at detection limit)
+[[missiles]]
+name = "IRBM Limit"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 146.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 55.0
+
+# Beyond range - ~500km
+[[missiles]]
+name = "IRBM Beyond"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 148.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 70.0

@@ -1,0 +1,103 @@
+# Demo Scenario
+# Multi-region demonstration with various missile types and defense systems
+
+[metadata]
+id = "demo"
+name = "Demo Scenario"
+description = "Multi-region demonstration with various threats"
+region = "Global"
+center_lat = 20.0
+center_lon = 0.0
+zoom = 2.0
+
+# US Defense Assets
+[[defense_units]]
+name = "THAAD California"
+affiliation = "Friendly"
+lat = 37.5
+lon = -122.0
+type = "THAAD"
+interceptors = 48
+
+[[defense_units]]
+name = "Aegis Sea of Japan"
+affiliation = "Friendly"
+lat = 38.0
+lon = 132.0
+type = "Aegis"
+interceptors = 96
+
+[[defense_units]]
+name = "GBI Alaska"
+affiliation = "Friendly"
+lat = 64.0
+lon = -146.0
+type = "GBI"
+interceptors = 44
+
+# Early Warning
+[[radar_stations]]
+name = "Early Warning Alaska"
+affiliation = "Friendly"
+lat = 71.0
+lon = -156.0
+range_km = 2000.0
+
+# Satellites
+[[satellites]]
+name = "SBIRS GEO-2"
+affiliation = "Friendly"
+lat = 0.0
+lon = 120.0
+altitude_km = 35786.0
+sensor_type = "Infrared"
+
+# Missiles - Mix of types for demonstration
+
+# ICBMs - High apogee, long range
+[[missiles]]
+name = "ICBM Demo 1"
+affiliation = "Hostile"
+origin_lat = 39.0
+origin_lon = 125.5
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 60.0
+
+[[missiles]]
+name = "ICBM Demo 2"
+affiliation = "Hostile"
+origin_lat = 39.0
+origin_lon = 125.5
+target_lat = 47.6
+target_lon = -122.3
+launch_delay_sec = 120.0
+
+# MRBM - Medium range
+[[missiles]]
+name = "MRBM Demo"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 51.0
+target_lat = 32.0
+target_lon = 34.8
+launch_delay_sec = 30.0
+
+# SRBMs - Short range, lower apogee (within THAAD envelope for salvo fire demonstration)
+[[missiles]]
+name = "SRBM Test 1"
+affiliation = "Hostile"
+origin_lat = 37.5
+origin_lon = -132.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 15.0
+
+[[missiles]]
+name = "SRBM Test 2"
+affiliation = "Hostile"
+origin_lat = 38.0
+origin_lon = -132.5
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 20.0

@@ -1,0 +1,51 @@
+# Iron Dome Test Scenario
+# Isolated test of Iron Dome radar + Tamir interceptor against short-range rockets
+# Engagement envelope: 0.5-10km altitude, ~70km range
+
+[metadata]
+id = "test_iron_dome"
+name = "Iron Dome Test"
+description = "Iron Dome Battery vs short-range rockets (0.5-10km altitude)"
+region = "Middle East"
+center_lat = 31.5
+center_lon = 34.5
+zoom = 6.0
+
+# Single Iron Dome battery
+[[defense_units]]
+name = "Iron Dome Test Battery"
+affiliation = "Friendly"
+lat = 31.5
+lon = 34.5
+type = "IronDome"
+interceptors = 80
+
+# Short-range rocket - ~40km, very low apogee ~5km
+[[missiles]]
+name = "Rocket-1"
+affiliation = "Hostile"
+origin_lat = 31.3
+origin_lon = 34.8
+target_lat = 31.5
+target_lon = 34.5
+launch_delay_sec = 5.0
+
+# Short-range rocket - ~60km, apogee ~8km
+[[missiles]]
+name = "Rocket-2"
+affiliation = "Hostile"
+origin_lat = 31.1
+origin_lon = 34.9
+target_lat = 31.5
+target_lon = 34.5
+launch_delay_sec = 10.0
+
+# Short-range rocket - ~30km, apogee ~4km
+[[missiles]]
+name = "Rocket-3"
+affiliation = "Hostile"
+origin_lat = 31.6
+origin_lon = 34.8
+target_lat = 31.5
+target_lon = 34.5
+launch_delay_sec = 15.0

@@ -1,0 +1,21 @@
+# System identification and description
+[system]
+# Official system designation
+name = "Patriot"
+# Full system name and role
+description = "PAC-3 MSE terminal defense"
+
+# Launcher platform configuration
+[launcher]
+# Reference to interceptor configuration (by system name)
+interceptor_type = "PAC-3 MSE"
+# Reference to sensor configuration (by system name)
+sensor_config_name = "AN/MPQ-65"
+# Maximum number of interceptors per launcher
+max_interceptors = 16
+# Time required to reload launcher after depletion (minutes)
+reload_time_minutes = 60.0
+# Maximum number of interceptors that can be launched in one salvo
+max_salvo_size = 2
+# Maximum range at which interceptors can be launched (km)
+engagement_range_km = 70.0

@@ -1,0 +1,51 @@
+# David's Sling Test Scenario
+# Isolated test of David's Sling (Stunner interceptor) against SRBM/MRBM
+# Engagement envelope: 10-70km altitude, ~300km range
+
+[metadata]
+id = "test_davids_sling"
+name = "David's Sling Test"
+description = "David's Sling Battery vs SRBM/MRBM (10-70km altitude)"
+region = "Middle East"
+center_lat = 32.0
+center_lon = 35.0
+zoom = 5.0
+
+# Single David's Sling battery
+[[defense_units]]
+name = "David's Sling Test Battery"
+affiliation = "Friendly"
+lat = 32.0
+lon = 35.0
+type = "DavidsSling"
+interceptors = 48
+
+# SRBM - ~300km range, apogee ~50km (mid envelope)
+[[missiles]]
+name = "SRBM-1"
+affiliation = "Hostile"
+origin_lat = 33.5
+origin_lon = 36.5
+target_lat = 32.0
+target_lon = 35.0
+launch_delay_sec = 10.0
+
+# SRBM - ~500km range, apogee ~70km (high end of envelope)
+[[missiles]]
+name = "SRBM-2"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 38.0
+target_lat = 32.0
+target_lon = 35.0
+launch_delay_sec = 20.0
+
+# MRBM - ~800km range, apogee ~90km (slightly above optimal)
+[[missiles]]
+name = "MRBM-1"
+affiliation = "Hostile"
+origin_lat = 36.0
+origin_lon = 40.0
+target_lat = 32.0
+target_lon = 35.0
+launch_delay_sec = 30.0

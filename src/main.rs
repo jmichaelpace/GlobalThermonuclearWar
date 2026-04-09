@@ -1,8 +1,11 @@
 mod app;
+mod effects;
 mod map;
 mod rendering;
 mod scenario;
 mod simulation;
+mod tracking;
+mod view;
 
 use app::App;
 use eframe::egui;

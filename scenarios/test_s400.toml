@@ -1,0 +1,61 @@
+# S-400 Test Scenario
+# Isolated test of S-400 Triumf multi-layer defense system
+# Engagement envelope: 0.01-400km altitude, ~400km range
+
+[metadata]
+id = "test_s400"
+name = "S-400 Test"
+description = "S-400 Battery vs multi-layer threats (0.01-400km altitude)"
+region = "Europe"
+center_lat = 55.0
+center_lon = 38.0
+zoom = 4.5
+
+# Single S-400 battery
+[[defense_units]]
+name = "S-400 Test Battery"
+affiliation = "Friendly"
+lat = 55.0
+lon = 38.0
+type = "S400"
+interceptors = 64
+
+# Low altitude - ~150km range, apogee ~30km
+[[missiles]]
+name = "SRBM-Low"
+affiliation = "Hostile"
+origin_lat = 54.0
+origin_lon = 39.5
+target_lat = 55.0
+target_lon = 38.0
+launch_delay_sec = 10.0
+
+# Medium altitude - ~1000km range, apogee ~100km
+[[missiles]]
+name = "MRBM-Mid"
+affiliation = "Hostile"
+origin_lat = 55.0
+origin_lon = 47.0
+target_lat = 55.0
+target_lon = 38.0
+launch_delay_sec = 25.0
+
+# High altitude - ~2500km range, apogee ~250km
+[[missiles]]
+name = "MRBM-High"
+affiliation = "Hostile"
+origin_lat = 55.0
+origin_lon = 60.0
+target_lat = 55.0
+target_lon = 38.0
+launch_delay_sec = 40.0
+
+# Very high altitude - ~4000km range, apogee ~400km (at envelope limit)
+[[missiles]]
+name = "IRBM-VHigh"
+affiliation = "Hostile"
+origin_lat = 55.0
+origin_lon = 73.0
+target_lat = 55.0
+target_lon = 38.0
+launch_delay_sec = 55.0

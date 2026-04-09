@@ -1,0 +1,120 @@
+# Pacific Theater - North Korea vs US
+# North Korean ICBM launches against US West Coast
+
+[metadata]
+id = "pacific_theater"
+name = "Pacific Theater"
+description = "North Korean ICBM launches against US West Coast"
+region = "Pacific"
+center_lat = 40.0
+center_lon = 180.0
+zoom = 2.5
+
+# Defense Units
+[[defense_units]]
+name = "THAAD Battery Alpha"
+affiliation = "Friendly"
+lat = 37.5
+lon = -122.0
+type = "THAAD"
+interceptors = 48
+
+[[defense_units]]
+name = "THAAD Battery Bravo"
+affiliation = "Friendly"
+lat = 47.6
+lon = -122.3
+type = "THAAD"
+interceptors = 48
+
+[[defense_units]]
+name = "GBI Site Fort Greely"
+affiliation = "Friendly"
+lat = 64.0
+lon = -146.0
+type = "GBI"
+interceptors = 44
+
+[[defense_units]]
+name = "GBI Site Vandenberg"
+affiliation = "Friendly"
+lat = 34.7
+lon = -120.5
+type = "GBI"
+interceptors = 8
+
+[[defense_units]]
+name = "USS Shiloh (Aegis)"
+affiliation = "Friendly"
+lat = 38.0
+lon = 132.0
+type = "Aegis"
+interceptors = 96
+
+[[defense_units]]
+name = "USS John Paul Jones (Aegis)"
+affiliation = "Friendly"
+lat = 35.0
+lon = -165.0
+type = "Aegis"
+interceptors = 96
+
+# Radar Stations
+[[radar_stations]]
+name = "Cobra Dane"
+affiliation = "Friendly"
+lat = 52.7
+lon = 174.1
+range_km = 3000.0
+
+[[radar_stations]]
+name = "SBX-1"
+affiliation = "Friendly"
+lat = 45.0
+lon = 170.0
+range_km = 4000.0
+
+# Satellites
+[[satellites]]
+name = "SBIRS GEO-2"
+affiliation = "Friendly"
+lat = 0.0
+lon = 120.0
+altitude_km = 35786.0
+sensor_type = "Infrared"
+
+[[satellites]]
+name = "SBIRS GEO-4"
+affiliation = "Friendly"
+lat = 0.0
+lon = -135.0
+altitude_km = 35786.0
+sensor_type = "Infrared"
+
+# Missiles
+[[missiles]]
+name = "Hwasong-15 #1"
+affiliation = "Hostile"
+origin_lat = 39.0
+origin_lon = 125.5
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 30.0
+
+[[missiles]]
+name = "Hwasong-15 #2"
+affiliation = "Hostile"
+origin_lat = 39.0
+origin_lon = 125.5
+target_lat = 47.6
+target_lon = -122.3
+launch_delay_sec = 60.0
+
+[[missiles]]
+name = "Hwasong-15 #3"
+affiliation = "Hostile"
+origin_lat = 39.0
+origin_lon = 125.5
+target_lat = 34.0
+target_lon = -118.2
+launch_delay_sec = 90.0

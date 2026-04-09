@@ -1,0 +1,51 @@
+# AEGIS Test Scenario
+# Isolated test of AEGIS + SPY-1 radar against MRBM/IRBM
+# Engagement envelope: 70-500km altitude, ~500km range
+
+[metadata]
+id = "test_aegis"
+name = "AEGIS Test"
+description = "AEGIS Destroyer vs MRBM/IRBM (70-500km altitude envelope)"
+region = "Pacific"
+center_lat = 35.0
+center_lon = 140.0
+zoom = 4.0
+
+# Single AEGIS destroyer
+[[defense_units]]
+name = "USS Test (DDG)"
+affiliation = "Friendly"
+lat = 35.0
+lon = 140.0
+type = "Aegis"
+interceptors = 48
+
+# MRBM - ~1500km range, apogee ~150km (low end of envelope)
+[[missiles]]
+name = "MRBM-1"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 153.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 10.0
+
+# MRBM - ~2500km range, apogee ~250km (mid envelope)
+[[missiles]]
+name = "MRBM-2"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 162.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 25.0
+
+# IRBM - ~4000km range, apogee ~400km (high end of envelope)
+[[missiles]]
+name = "IRBM-1"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 175.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 40.0

@@ -70,6 +70,8 @@ impl MilitarySymbols {
     }
 
     /// Draw a missile symbol
+    /// track_quality: Optional track quality (0.0-1.0), affects transparency
+    /// fire_control_locked: If true, changes from light red to dark red
     pub fn draw_missile(
         painter: &egui::Painter,
         pos: Pos2,
@@ -77,21 +79,75 @@ impl MilitarySymbols {
         status: MissileStatus,
         heading: f32, // radians
         size: f32,
+        track_quality: Option<f64>,
+        fire_control_locked: bool,
     ) {
-        let (frame_color, _fill_color) = SymbolColors::for_affiliation(affiliation);
-        let phase_color = SymbolColors::for_missile_phase(status);
+        let (mut frame_color, _fill_color) = SymbolColors::for_affiliation(affiliation);
+        let mut phase_color = SymbolColors::for_missile_phase(status);
+
+        // Apply transparency based on track quality (if provided)
+        // Lower quality = more transparent
+        if let Some(quality) = track_quality {
+            // Map quality (0.0-1.0) to alpha (50-255)
+            // Quality 0.0 = very transparent (alpha 50)
+            // Quality 1.0 = fully opaque (alpha 255)
+            let alpha = (quality * 205.0 + 50.0).clamp(50.0, 255.0) as u8;
+            phase_color = Color32::from_rgba_unmultiplied(
+                phase_color.r(),
+                phase_color.g(),
+                phase_color.b(),
+                alpha,
+            );
+        }
+
+        // Change color from light red to dark red when under fire control lock
+        if fire_control_locked && affiliation == Affiliation::Hostile {
+            // Much darker red/maroon for fire control locked targets
+            phase_color = Color32::from_rgba_unmultiplied(120, 0, 0, phase_color.a());
+            frame_color = Color32::from_rgba_unmultiplied(100, 0, 0, 255); // Dark maroon frame
+        }
 
         match status {
             MissileStatus::PreLaunch => {
                 // Small dot for pre-launch
-                painter.circle_filled(pos, size * 0.3, frame_color.gamma_multiply(0.5));
+                let mut pre_color = frame_color.gamma_multiply(0.5);
+                if let Some(quality) = track_quality {
+                    let alpha = (quality * 205.0 + 50.0).clamp(50.0, 255.0) as u8;
+                    pre_color = Color32::from_rgba_unmultiplied(
+                        pre_color.r(),
+                        pre_color.g(),
+                        pre_color.b(),
+                        alpha,
+                    );
+                }
+                painter.circle_filled(pos, size * 0.3, pre_color);
             }
             MissileStatus::Boost | MissileStatus::Midcourse | MissileStatus::Terminal => {
+                // Fire control lock indicator - bright targeting ring
+                if fire_control_locked {
+                    painter.circle_stroke(
+                        pos,
+                        size * 2.0,
+                        Stroke::new(2.5, Color32::from_rgb(255, 100, 0)), // Bright orange ring
+                    );
+                    painter.circle_stroke(
+                        pos,
+                        size * 2.3,
+                        Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 100, 0, 120)), // Outer glow
+                    );
+                }
+
                 // Rotated missile shape
                 Self::draw_missile_icon(painter, pos, heading, phase_color, frame_color, size);
 
-                // Glow effect
-                painter.circle_filled(pos, size * 1.5, phase_color.gamma_multiply(0.2));
+                // Glow effect with same transparency
+                let glow_color = Color32::from_rgba_unmultiplied(
+                    phase_color.r(),
+                    phase_color.g(),
+                    phase_color.b(),
+                    (phase_color.a() as f32 * 0.2) as u8,
+                );
+                painter.circle_filled(pos, size * 1.5, glow_color);
 
                 // Boost flame for boost phase
                 if status == MissileStatus::Boost {

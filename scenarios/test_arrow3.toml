@@ -1,0 +1,51 @@
+# Arrow 3 Test Scenario
+# Isolated test of Arrow 3 + Green Pine/Super Green Pine radar against MRBM/IRBM
+# Engagement envelope: 20-400km altitude, ~400km range
+
+[metadata]
+id = "test_arrow3"
+name = "Arrow 3 Test"
+description = "Arrow 3 Battery vs MRBM/IRBM (20-400km altitude envelope)"
+region = "Middle East"
+center_lat = 31.0
+center_lon = 35.0
+zoom = 4.0
+
+# Single Arrow 3 battery
+[[defense_units]]
+name = "Arrow 3 Test Battery"
+affiliation = "Friendly"
+lat = 31.0
+lon = 35.0
+type = "Arrow3"
+interceptors = 24
+
+# MRBM - ~1000km range, apogee ~100km (low end of envelope)
+[[missiles]]
+name = "MRBM-1"
+affiliation = "Hostile"
+origin_lat = 35.7
+origin_lon = 51.4
+target_lat = 31.0
+target_lon = 35.0
+launch_delay_sec = 10.0
+
+# MRBM - ~2000km range, apogee ~200km (mid envelope)
+[[missiles]]
+name = "MRBM-2"
+affiliation = "Hostile"
+origin_lat = 35.7
+origin_lon = 51.4
+target_lat = 24.0
+target_lon = 35.0
+launch_delay_sec = 25.0
+
+# IRBM - ~3500km range, apogee ~350km (high end of envelope)
+[[missiles]]
+name = "IRBM-1"
+affiliation = "Hostile"
+origin_lat = 35.7
+origin_lon = 51.4
+target_lat = 15.0
+target_lon = 42.0
+launch_delay_sec = 40.0

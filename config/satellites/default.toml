@@ -1,17 +1,32 @@
+# System identification and description
 [system]
+# Official satellite designation
 name = "Generic Satellite"
+# Full system name and role
 description = "Default early warning satellite configuration"
 
+# Orbital parameters
 [orbit]
+# Average orbital altitude above Earth's surface (km)
 altitude_km = 35786.0
+# Time to complete one orbit (hours)
 orbital_period_hours = 24.0
+# Orbit classification (GEO=geostationary, HEO=highly elliptical, LEO=low earth)
 orbit_type = "GEO"
+# Orbital inclination relative to equator (degrees, 0=equatorial)
 inclination_deg = 0.0
 
+# Sensor capabilities
 [sensor]
+# Type of detection sensor (Infrared, Radar, or Optical)
 sensor_type = "Infrared"
+# Field of view cone angle (degrees) - wider = more coverage, less detail
 coverage_angle_deg = 10.0
+# Maximum range for reliable target detection (km)
 detection_range_km = 4000.0
+# Can detect missile launch plumes during boost phase
 can_detect_boost_phase = true
+# Can track missiles during unpowered midcourse flight
 can_track_midcourse = false
+# How often satellite can update track on same target (seconds)
 revisit_time_sec = 5.0

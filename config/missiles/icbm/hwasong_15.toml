@@ -1,27 +1,58 @@
+# System identification and description
 [system]
+# Official missile designation
 name = "Hwasong-15"
+# Full system name and role
 description = "North Korean ICBM - intercontinental range"
+# Operating country/nation
 country = "DPRK"
+# NATO reporting name for the missile
 nato_designation = "KN-22"
 
+# Missile classification
 [classification]
+# Type: ICBM (Intercontinental), IRBM (Intermediate), MRBM (Medium), SRBM (Short), SLBM (Sub-launched)
 type = "ICBM"
 
+# Range capabilities
 [range]
+# Minimum operational range (km) - below this, targeting may be impractical
 min_range_km = 8500.0
+# Maximum range at optimal trajectory (km)
 max_range_km = 13000.0
 
+# Ballistic trajectory parameters
 [trajectory]
+# Base apogee altitude (km) - trajectory peak altitude for minimum range
 apogee_base_km = 800.0
+# How much apogee increases per km of range (multiplier)
 apogee_range_factor = 0.08
+# Base flight time (seconds) for minimum range shot
 flight_time_base_sec = 1200.0
+# How much flight time increases per km of range (multiplier)
 flight_time_range_factor = 0.1
 
+# Boost phase characteristics
 [boost]
+# Fraction of total flight time spent in powered boost phase (0.0-1.0)
 boost_phase_fraction = 0.08
+# Velocity at end of boost phase (km/s)
 boost_velocity_km_s = 7.0
 
+# Penetration aids and countermeasures
 [countermeasures]
+# Whether missile deploys decoys and chaff
 has_countermeasures = true
+# Number of decoys deployed in standard configuration
 default_decoys = 2
+# Maximum number of decoys that can be deployed
 max_decoys = 6
+
+# Radar cross section by flight phase
+[radar_signature]
+# RCS during boost phase (dBsm) - very large due to exhaust plume
+rcs_boost_dbsm = 15.0
+# RCS during midcourse flight (dBsm) - reentry vehicle in space
+rcs_midcourse_dbsm = 0.0
+# RCS during terminal descent (dBsm) - smaller as RV descends
+rcs_terminal_dbsm = -5.0

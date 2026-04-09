@@ -1,0 +1,70 @@
+# AN/TPY-2 Radar Test Scenario
+# THAAD X-band radar in forward-based mode
+# Detection range: ~1000km, high-resolution tracking
+
+[metadata]
+id = "test_sensor_tpy2"
+name = "AN/TPY-2 Radar Test"
+description = "THAAD AN/TPY-2 X-band radar detection test (forward-based mode)"
+region = "Pacific"
+center_lat = 37.0
+center_lon = 127.0
+zoom = 4.0
+
+# TPY-2 radar (forward deployed, e.g., South Korea)
+[[radar_stations]]
+name = "AN/TPY-2 Forward"
+affiliation = "Friendly"
+lat = 37.0
+lon = 127.0
+range_km = 1000.0
+
+# SRBM - ~300km from radar, apogee ~60km
+[[missiles]]
+name = "SRBM Close"
+affiliation = "Hostile"
+origin_lat = 39.5
+origin_lon = 127.5
+target_lat = 37.5
+target_lon = 126.9
+launch_delay_sec = 10.0
+
+# MRBM - ~600km from radar, apogee ~150km
+[[missiles]]
+name = "MRBM Near"
+affiliation = "Hostile"
+origin_lat = 40.0
+origin_lon = 125.0
+target_lat = 35.0
+target_lon = 126.5
+launch_delay_sec = 25.0
+
+# IRBM - ~900km from radar, apogee ~350km
+[[missiles]]
+name = "IRBM Mid"
+affiliation = "Hostile"
+origin_lat = 42.0
+origin_lon = 130.0
+target_lat = 34.0
+target_lon = 126.0
+launch_delay_sec = 40.0
+
+# ICBM - ~1000km from radar (at detection limit)
+[[missiles]]
+name = "ICBM Limit"
+affiliation = "Hostile"
+origin_lat = 40.0
+origin_lon = 125.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 55.0
+
+# Beyond range - ~1200km
+[[missiles]]
+name = "ICBM Beyond"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 120.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 70.0

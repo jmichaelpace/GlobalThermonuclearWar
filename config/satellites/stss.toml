@@ -1,18 +1,34 @@
+# System identification and description
 [system]
+# Official satellite designation
 name = "STSS"
+# Full system name and role
 description = "Space Tracking and Surveillance System - tracking demonstrator"
+# Operating country/nation
 country = "USA"
 
+# Orbital parameters
 [orbit]
+# Average orbital altitude above Earth's surface (km)
 altitude_km = 1350.0
+# Time to complete one orbit (hours)
 orbital_period_hours = 1.9
+# Orbit classification (GEO=geostationary, HEO=highly elliptical, LEO=low earth)
 orbit_type = "LEO"
+# Orbital inclination relative to equator (degrees, 0=equatorial)
 inclination_deg = 58.0
 
+# Sensor capabilities
 [sensor]
+# Type of detection sensor (Infrared, Radar, or Optical)
 sensor_type = "Infrared"
+# Field of view cone angle (degrees) - wider = more coverage, less detail
 coverage_angle_deg = 5.0
+# Maximum range for reliable target detection (km)
 detection_range_km = 3000.0
+# Can detect missile launch plumes during boost phase
 can_detect_boost_phase = true
+# Can track missiles during unpowered midcourse flight
 can_track_midcourse = true
+# How often satellite can update track on same target (seconds)
 revisit_time_sec = 0.5

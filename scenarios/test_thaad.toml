@@ -1,0 +1,51 @@
+# THAAD Test Scenario
+# Isolated test of THAAD + TPY-2 radar against SRBM/MRBM
+# Engagement envelope: 40-150km altitude, ~200km range
+
+[metadata]
+id = "test_thaad"
+name = "THAAD Test"
+description = "THAAD Battery vs SRBM/MRBM (40-150km altitude envelope)"
+region = "Pacific"
+center_lat = 37.5
+center_lon = -122.0
+zoom = 4.0
+
+# Single THAAD battery
+[[defense_units]]
+name = "THAAD Test Battery"
+affiliation = "Friendly"
+lat = 37.5
+lon = -122.0
+type = "THAAD"
+interceptors = 48
+
+# SRBM - Short range, ~500km, apogee ~80km (within envelope)
+[[missiles]]
+name = "SRBM-1"
+affiliation = "Hostile"
+origin_lat = 37.5
+origin_lon = -127.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 10.0
+
+# SRBM - Closer range, ~300km, apogee ~60km (within envelope)
+[[missiles]]
+name = "SRBM-2"
+affiliation = "Hostile"
+origin_lat = 39.0
+origin_lon = -125.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 20.0
+
+# MRBM - Medium range, ~1500km, apogee ~150km (at top of envelope)
+[[missiles]]
+name = "MRBM-1"
+affiliation = "Hostile"
+origin_lat = 37.5
+origin_lon = -135.0
+target_lat = 37.5
+target_lon = -122.0
+launch_delay_sec = 30.0
