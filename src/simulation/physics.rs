@@ -1,4 +1,6 @@
 use crate::map::GeoCoord;
+use crate::simulation::detection::FusedTrack;
+use crate::simulation::kalman::BallisticState;
 
 const EARTH_RADIUS_KM: f64 = 6371.0;
 
@@ -58,7 +60,7 @@ pub fn interpolate_great_circle(from: GeoCoord, to: GeoCoord, t: f64) -> GeoCoor
 
 /// Ballistic trajectory calculator
 /// Models a simplified ballistic missile flight profile
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BallisticTrajectory {
     pub origin: GeoCoord,
     pub target: GeoCoord,
@@ -323,4 +325,133 @@ pub fn km_to_degrees(km: f64) -> f64 {
 /// Convert degrees to kilometers (approximate, at equator)
 pub fn degrees_to_km(degrees: f64) -> f64 {
     degrees * 111.32
+}
+
+/// Uncertainty envelope for a predicted trajectory
+/// Used when calculating intercept solutions from filtered estimates
+#[derive(Clone, Debug)]
+pub struct TrajectoryUncertainty {
+    /// Current position uncertainty (standard deviation in km)
+    pub position_uncertainty_km: f64,
+    /// Rate at which uncertainty grows per second (km/s)
+    /// This accounts for velocity uncertainty propagating to position
+    pub grows_per_second: f64,
+    /// Velocity uncertainty (km/s)
+    pub velocity_uncertainty_km_s: f64,
+}
+
+impl TrajectoryUncertainty {
+    /// Get position uncertainty at a future time
+    pub fn uncertainty_at_time(&self, dt: f64) -> f64 {
+        // Uncertainty grows linearly with time due to velocity uncertainty
+        self.position_uncertainty_km + self.grows_per_second * dt.abs()
+    }
+}
+
+/// Result of trajectory prediction from track data
+#[derive(Clone, Debug)]
+pub struct TrackPrediction {
+    /// Predicted trajectory (may have larger uncertainty than ground truth)
+    pub trajectory: BallisticTrajectory,
+    /// Uncertainty information
+    pub uncertainty: TrajectoryUncertainty,
+    /// Estimated current progress along trajectory (0.0-1.0)
+    pub current_progress: f64,
+    /// Estimated time remaining to impact (seconds)
+    pub time_to_impact_sec: f64,
+}
+
+/// Predict future trajectory from fused track using Kalman state
+///
+/// This is used for intercept calculations when we want to use filtered
+/// estimates instead of ground truth missile state.
+///
+/// Returns None if insufficient data for prediction (no velocity estimate or Kalman state)
+pub fn predict_trajectory_from_track(
+    fused_track: &FusedTrack,
+    kalman_state: Option<&BallisticState>,
+    _prediction_horizon_sec: f64,
+) -> Option<TrackPrediction> {
+    // Need either velocity estimate or Kalman state
+    let velocity = fused_track.estimated_velocity.as_ref()?;
+
+    // Calculate uncertainty from available data
+    let (position_uncertainty, velocity_uncertainty, grows_per_second) =
+        if let Some(kf) = kalman_state {
+            let pos_unc = kf.get_position_uncertainty();
+            let vel_unc = kf.get_velocity_uncertainty();
+            // Uncertainty growth rate is the velocity uncertainty
+            (pos_unc, vel_unc, vel_unc)
+        } else {
+            // Fall back to fused track uncertainty
+            let pos_unc = fused_track.kalman_position_uncertainty_km
+                .unwrap_or(fused_track.uncertainty_radius_km);
+            // Estimate velocity uncertainty from confidence
+            let vel_unc = 0.5 * (1.0 - velocity.confidence);
+            (pos_unc, vel_unc, vel_unc)
+        };
+
+    // Estimate current apogee (max altitude so far or estimated)
+    // Use current altitude and vertical rate to estimate
+    let estimated_apogee = if velocity.vertical_rate_km_s >= 0.0 {
+        // Still ascending - apogee not yet reached
+        // Estimate using ballistic kinematics: h_max = h + v²/(2g)
+        let g = 0.00981; // km/s²
+        let v_up = velocity.vertical_rate_km_s;
+        fused_track.estimated_altitude + (v_up * v_up) / (2.0 * g)
+    } else {
+        // Descending - estimate apogee from current altitude assuming midcourse
+        fused_track.estimated_altitude * 2.0 // rough estimate
+    }.max(fused_track.estimated_altitude);
+
+    // Estimate flight progress from altitude and vertical rate
+    let current_progress = BallisticTrajectory::estimate_flight_progress_from_altitude(
+        fused_track.estimated_altitude,
+        velocity.vertical_rate_km_s,
+        estimated_apogee,
+    );
+
+    // Build trajectory from sensor data
+    let trajectory = BallisticTrajectory::from_sensor_track(
+        fused_track.estimated_position,
+        fused_track.estimated_altitude,
+        velocity,
+        current_progress,
+    )?;
+
+    // Estimate time to impact
+    let time_to_impact_sec = trajectory.flight_time_sec * (1.0 - current_progress);
+
+    Some(TrackPrediction {
+        trajectory,
+        uncertainty: TrajectoryUncertainty {
+            position_uncertainty_km: position_uncertainty,
+            grows_per_second,
+            velocity_uncertainty_km_s: velocity_uncertainty,
+        },
+        current_progress,
+        time_to_impact_sec,
+    })
+}
+
+/// Predict position at a future time using Kalman state if available,
+/// otherwise fall back to trajectory-based prediction
+pub fn predict_position_at_time(
+    fused_track: &FusedTrack,
+    kalman_state: Option<&BallisticState>,
+    dt: f64,
+) -> Option<(GeoCoord, f64, f64)> {
+    // Prefer Kalman state prediction if available
+    if let Some(kf) = kalman_state {
+        return Some(kf.predict_at_time(dt));
+    }
+
+    // Fall back to trajectory-based prediction
+    let prediction = predict_trajectory_from_track(fused_track, None, dt)?;
+    let future_progress = (prediction.current_progress + dt / prediction.trajectory.flight_time_sec)
+        .clamp(0.0, 1.0);
+    let (pos, alt) = prediction.trajectory.position_at(future_progress);
+    let uncertainty = prediction.uncertainty.uncertainty_at_time(dt);
+
+    Some((pos, alt, uncertainty))
 }

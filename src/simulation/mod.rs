@@ -1,5 +1,6 @@
 pub mod config;
 pub mod detection;
+pub mod ekf;
 pub mod engine;
 pub mod entities;
 pub mod kalman;

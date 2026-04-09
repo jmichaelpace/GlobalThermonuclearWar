@@ -193,6 +193,74 @@ impl BallisticState {
         let var_avg = (self.covariance[21] + self.covariance[28] + self.covariance[35]) / 3.0;
         var_avg.sqrt()
     }
+
+    /// Get 3D position uncertainty from covariance diagonal
+    /// Returns (east_uncertainty_km, north_uncertainty_km, up_uncertainty_km)
+    pub fn get_3d_position_uncertainty(&self) -> (f64, f64, f64) {
+        (
+            self.covariance[0].sqrt(),   // east variance -> std dev
+            self.covariance[7].sqrt(),   // north variance -> std dev
+            self.covariance[14].sqrt(),  // up variance -> std dev
+        )
+    }
+
+    /// Get 3D velocity uncertainty from covariance diagonal
+    /// Returns (v_east_uncertainty, v_north_uncertainty, v_up_uncertainty) in km/s
+    pub fn get_3d_velocity_uncertainty(&self) -> (f64, f64, f64) {
+        (
+            self.covariance[21].sqrt(),  // v_east variance -> std dev
+            self.covariance[28].sqrt(),  // v_north variance -> std dev
+            self.covariance[35].sqrt(),  // v_up variance -> std dev
+        )
+    }
+
+    /// Predict position and uncertainty at a future time without modifying state
+    /// Returns (position: GeoCoord, altitude_km: f64, position_uncertainty_km: f64)
+    ///
+    /// This is useful for intercept calculations where we need to predict
+    /// where the target will be at a future time.
+    pub fn predict_at_time(&self, dt: f64) -> (GeoCoord, f64, f64) {
+        if dt <= 0.0 {
+            let (pos, alt) = self.get_position();
+            return (pos, alt, self.get_position_uncertainty());
+        }
+
+        // Clone state and predict forward
+        let mut predicted = self.clone();
+        predicted.predict(dt);
+
+        let (pos, alt) = predicted.get_position();
+        let uncertainty = predicted.get_position_uncertainty();
+
+        (pos, alt, uncertainty)
+    }
+
+    /// Predict state at multiple future times (for trajectory visualization)
+    /// Returns Vec of (time_offset, position, altitude, uncertainty)
+    pub fn predict_trajectory(&self, time_step: f64, num_steps: usize) -> Vec<(f64, GeoCoord, f64, f64)> {
+        let mut results = Vec::with_capacity(num_steps);
+        let mut state = self.clone();
+
+        for i in 0..num_steps {
+            let t = (i as f64) * time_step;
+            if i > 0 {
+                state.predict(time_step);
+            }
+            let (pos, alt) = state.get_position();
+            let uncertainty = state.get_position_uncertainty();
+            results.push((t, pos, alt, uncertainty));
+        }
+
+        results
+    }
+
+    /// Get velocity in geographic terms (ground_speed_km_s, heading_deg, vertical_rate_km_s)
+    /// with uncertainties
+    pub fn get_velocity_with_uncertainty(&self) -> ((f64, f64, f64), (f64, f64, f64)) {
+        let velocity = self.get_velocity();
+        let uncertainty = self.get_3d_velocity_uncertainty();
+        (velocity, uncertainty)
+    }
 }
 
 // === Coordinate Transformations ===

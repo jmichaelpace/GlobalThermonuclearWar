@@ -11,6 +11,16 @@ use crate::simulation::{
 use crate::simulation::config::{RadarBand, RadarMode, RadarType, SensorRole, SensorTrackingConfig};
 use crate::simulation::kalman::BallisticState;
 
+/// Type of Kalman filter to use for tracking
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FilterType {
+    /// Linear Kalman Filter in local ENU coordinates (simpler, faster)
+    LinearKalman,
+    /// Extended Kalman Filter in geodetic coordinates (more accurate for long range)
+    #[default]
+    ExtendedKalman,
+}
+
 /// Detection event - a sensor detecting a threat
 #[derive(Clone, Debug)]
 pub struct Detection {
@@ -25,6 +35,8 @@ pub struct Detection {
     pub is_false_alarm: bool,
     /// Radar band used for this detection (None for non-radar sensors)
     pub radar_band: Option<RadarBand>,
+    /// Raw radar measurement for EKF (range/azimuth/elevation)
+    pub radar_measurement: Option<crate::simulation::ekf::RadarMeasurement>,
 }
 
 /// Kind of sensor that made the detection
@@ -74,8 +86,10 @@ pub struct TrackingState {
     pub estimated_velocity: Option<VelocityEstimate>,
     /// Estimated heading derived from velocity (degrees, 0=North)
     pub estimated_heading_deg: Option<f64>,
-    /// Kalman filter for optimal state estimation
+    /// Linear Kalman filter for optimal state estimation (ENU coordinates)
     pub kalman_filter: Option<BallisticState>,
+    /// Extended Kalman filter for optimal state estimation (geodetic coordinates)
+    pub ekf_state: Option<crate::simulation::ekf::EKFState>,
 }
 
 impl TrackingState {
@@ -125,6 +139,53 @@ impl TrackingState {
 
         // Add to front of history (newest first)
         self.position_history.insert(0, measurement);
+
+        // Trim to max history
+        if self.position_history.len() > MAX_POSITION_HISTORY {
+            self.position_history.truncate(MAX_POSITION_HISTORY);
+        }
+    }
+
+    /// Add a radar measurement and update the Extended Kalman Filter
+    pub fn add_radar_measurement(
+        &mut self,
+        measurement: &crate::simulation::ekf::RadarMeasurement,
+    ) {
+        use crate::simulation::ekf::EKFState;
+
+        // Update EKF
+        if let Some(ref mut ekf) = self.ekf_state {
+            // Predict forward to measurement time
+            let dt = measurement.timestamp - ekf.timestamp;
+            if dt > 0.0 {
+                ekf.predict(dt);
+            }
+            // Update with radar measurement
+            ekf.update(measurement);
+        } else {
+            // Initialize EKF with first measurement
+            self.ekf_state = Some(EKFState::new(measurement));
+        }
+
+        // Also update position history for visualization/backup
+        // Convert radar measurement to position
+        let (pos, alt) = crate::simulation::ekf::radar_to_geodetic(
+            measurement.sensor_position,
+            measurement.sensor_altitude_km,
+            measurement.range_km,
+            measurement.azimuth_rad,
+            measurement.elevation_rad,
+        );
+
+        let position_measurement = PositionMeasurement {
+            timestamp: measurement.timestamp,
+            position: pos,
+            altitude_km: alt,
+            measurement_quality: 0.8, // Radar measurements are generally good quality
+        };
+
+        // Add to front of history (newest first)
+        self.position_history.insert(0, position_measurement);
 
         // Trim to max history
         if self.position_history.len() > MAX_POSITION_HISTORY {
@@ -334,6 +395,8 @@ pub struct DetectionSystem {
     scan_accumulators: HashMap<EntityId, f64>,
     /// Radar mode state per sensor (phased arrays only)
     pub radar_mode_states: HashMap<EntityId, RadarModeState>,
+    /// Type of Kalman filter to use for tracking
+    pub filter_type: FilterType,
 }
 
 impl Default for DetectionSystem {
@@ -349,6 +412,50 @@ impl DetectionSystem {
             active_tracks: Vec::new(),
             scan_accumulators: HashMap::new(),
             radar_mode_states: HashMap::new(),
+            filter_type: FilterType::default(),
+        }
+    }
+
+    /// Create a new detection system with specified filter type
+    pub fn with_filter_type(filter_type: FilterType) -> Self {
+        Self {
+            active_detections: Vec::new(),
+            active_tracks: Vec::new(),
+            scan_accumulators: HashMap::new(),
+            radar_mode_states: HashMap::new(),
+            filter_type,
+        }
+    }
+
+    /// Create a RadarMeasurement from detection data for EKF
+    fn create_radar_measurement(
+        sensor_position: GeoCoord,
+        sensor_altitude_km: f64,
+        range_km: f64,
+        bearing_deg: f64,
+        target_altitude_km: f64,
+        timestamp: f64,
+        detection_quality: f64,
+    ) -> crate::simulation::ekf::RadarMeasurement {
+        // Calculate elevation angle from range and altitude difference
+        let ground_range = range_km.max(0.01); // Avoid division by zero
+        let altitude_diff = target_altitude_km - sensor_altitude_km;
+        let elevation_rad = (altitude_diff / ground_range).atan();
+
+        // Measurement noise depends on detection quality
+        // Higher quality = lower noise
+        let quality_factor = (1.0 - detection_quality).max(0.1);
+        let range_noise = 0.1 * quality_factor; // 0.01 - 0.1 km noise
+        let angle_noise = (0.5_f64).to_radians() * quality_factor; // 0.05 - 0.5 deg noise
+
+        crate::simulation::ekf::RadarMeasurement {
+            range_km,
+            azimuth_rad: bearing_deg.to_radians(),
+            elevation_rad,
+            sensor_position,
+            sensor_altitude_km,
+            timestamp,
+            noise_std: [range_noise, angle_noise, angle_noise],
         }
     }
 
@@ -438,7 +545,7 @@ impl DetectionSystem {
                                 }
 
                                 if let Some(detection) =
-                                    Self::check_defense_unit_detection(unit, missile, config, Some(radar_mode), band)
+                                    Self::check_defense_unit_detection(unit, missile, config, Some(radar_mode), band, current_sim_time)
                                 {
                                     // Use unique sensor ID for detection
                                     let mut detection = detection;
@@ -461,7 +568,7 @@ impl DetectionSystem {
                                 }
 
                                 if let Some(detection) =
-                                    Self::check_defense_unit_detection(unit, missile, config, None, band)
+                                    Self::check_defense_unit_detection(unit, missile, config, None, band, current_sim_time)
                                 {
                                     let mut detection = detection;
                                     detection.sensor_id = sensor.sensor_id;
@@ -520,7 +627,7 @@ impl DetectionSystem {
                             if let Some((radar_mode, band)) = mode_and_band {
                                 // Target has mode assignment - use assigned mode
                                 if let Some(detection) =
-                                    Self::check_defense_unit_detection(unit, missile, config, Some(radar_mode), band)
+                                    Self::check_defense_unit_detection(unit, missile, config, Some(radar_mode), band, current_sim_time)
                                 {
                                     self.active_detections.push(detection);
                                 }
@@ -528,7 +635,7 @@ impl DetectionSystem {
                                 // No mode assignment yet - use default Search mode
                                 let band = config.detection.get_band_for_mode(RadarMode::Search);
                                 if let Some(detection) =
-                                    Self::check_defense_unit_detection(unit, missile, config, None, band)
+                                    Self::check_defense_unit_detection(unit, missile, config, None, band, current_sim_time)
                                 {
                                     self.active_detections.push(detection);
                                 }
@@ -610,7 +717,7 @@ impl DetectionSystem {
                         }
 
                         if let Some(detection) =
-                            Self::check_radar_station_detection(station, missile, config, Some(radar_mode), band)
+                            Self::check_radar_station_detection(station, missile, config, Some(radar_mode), band, current_sim_time)
                         {
                             self.active_detections.push(detection);
                         }
@@ -638,7 +745,7 @@ impl DetectionSystem {
                         }
 
                         if let Some(detection) =
-                            Self::check_radar_station_detection(station, missile, config, None, band)
+                            Self::check_radar_station_detection(station, missile, config, None, band, current_sim_time)
                         {
                             self.active_detections.push(detection);
                         }
@@ -738,6 +845,7 @@ impl DetectionSystem {
                 altitude_km: altitude,
                 is_false_alarm: true,
                 radar_band: None,
+                radar_measurement: None,
             });
         }
 
@@ -751,6 +859,7 @@ impl DetectionSystem {
         config: &SensorConfig,
         radar_mode: Option<RadarMode>,
         band: RadarBand,
+        timestamp: f64,
     ) -> Option<Detection> {
         // Determine effective mode (default to Search for mechanical radars)
         let mode = radar_mode.unwrap_or(RadarMode::Search);
@@ -806,6 +915,18 @@ impl DetectionSystem {
         }
 
         // Detection successful - use probability as quality indicator
+        // Create radar measurement for EKF (always use slant range)
+        let slant_range = calculate_slant_range(unit.position, 0.0, missile.position, missile.altitude_km);
+        let radar_measurement = Some(Self::create_radar_measurement(
+            unit.position,
+            0.0, // Ground-based unit
+            slant_range,
+            bearing,
+            missile.altitude_km,
+            timestamp,
+            p_detect.max(0.1),
+        ));
+
         Some(Detection {
             sensor_id: unit.id,
             sensor_type: SensorKind::DefenseUnitRadar,
@@ -816,6 +937,7 @@ impl DetectionSystem {
             altitude_km: missile.altitude_km,
             is_false_alarm: false,
             radar_band: Some(band),
+            radar_measurement,
         })
     }
 
@@ -826,6 +948,7 @@ impl DetectionSystem {
         config: &SensorConfig,
         radar_mode: Option<RadarMode>,
         band: RadarBand,
+        timestamp: f64,
     ) -> Option<Detection> {
         // Determine effective mode (default to Search for mechanical radars)
         let mode = radar_mode.unwrap_or(RadarMode::Search);
@@ -892,6 +1015,18 @@ impl DetectionSystem {
             return None; // Detection failed this scan
         }
 
+        // Create radar measurement for EKF (always use slant range)
+        let slant_range = calculate_slant_range(station.position, 0.0, missile.position, missile.altitude_km);
+        let radar_measurement = Some(Self::create_radar_measurement(
+            station.position,
+            0.0, // Ground-based station
+            slant_range,
+            bearing,
+            missile.altitude_km,
+            timestamp,
+            p_detect.max(0.1),
+        ));
+
         Some(Detection {
             sensor_id: station.id,
             sensor_type: SensorKind::GroundRadar,
@@ -902,6 +1037,7 @@ impl DetectionSystem {
             altitude_km: missile.altitude_km,
             is_false_alarm: false,
             radar_band: Some(band),
+            radar_measurement,
         })
     }
 
@@ -961,6 +1097,7 @@ impl DetectionSystem {
             altitude_km: missile.altitude_km,
             is_false_alarm: false,
             radar_band: None, // Satellites don't use multi-band switching
+            radar_measurement: None,
         })
     }
 
@@ -1095,13 +1232,32 @@ impl DetectionSystem {
                         track.predicted_position = measured_position;
                         track.predicted_altitude = detection.altitude_km;
 
-                        // Add to position history (will be skipped if position unchanged)
-                        track.add_position_measurement(
-                            current_sim_time,
-                            measured_position,
-                            detection.altitude_km,
-                            detection.detection_quality,
-                        );
+                        // Update filter based on filter type
+                        match self.filter_type {
+                            FilterType::ExtendedKalman => {
+                                // Use EKF with raw radar measurement
+                                if let Some(ref radar_meas) = detection.radar_measurement {
+                                    track.add_radar_measurement(radar_meas);
+                                } else {
+                                    // Fallback to position measurement if no radar data
+                                    track.add_position_measurement(
+                                        current_sim_time,
+                                        measured_position,
+                                        detection.altitude_km,
+                                        detection.detection_quality,
+                                    );
+                                }
+                            }
+                            FilterType::LinearKalman => {
+                                // Use linear KF with converted position
+                                track.add_position_measurement(
+                                    current_sim_time,
+                                    measured_position,
+                                    detection.altitude_km,
+                                    detection.detection_quality,
+                                );
+                            }
+                        }
 
                         // Update velocity estimate
                         track.update_velocity_estimate(current_sim_time);
@@ -1154,6 +1310,24 @@ impl DetectionSystem {
                                     (GeoCoord::default(), Vec::new())
                                 };
 
+                            // Initialize filter based on filter type
+                            let (kalman_filter, ekf_state) = match self.filter_type {
+                                FilterType::ExtendedKalman => {
+                                    // Initialize EKF with radar measurement if available
+                                    let ekf = detection.radar_measurement.as_ref().map(|meas| {
+                                        crate::simulation::ekf::EKFState::new(meas)
+                                    });
+                                    (None, ekf)
+                                }
+                                FilterType::LinearKalman => {
+                                    // Initialize linear KF from position measurement
+                                    let kf = init_history.first().map(|meas| {
+                                        BallisticState::new(meas)
+                                    });
+                                    (kf, None)
+                                }
+                            };
+
                             // Create new track with network boost applied
                             self.active_tracks.push(TrackingState {
                                 tracker_id: detection.sensor_id,
@@ -1165,7 +1339,8 @@ impl DetectionSystem {
                                 position_history: init_history,
                                 estimated_velocity: None,
                                 estimated_heading_deg: None,
-                                kalman_filter: None,
+                                kalman_filter,
+                                ekf_state,
                             });
                         }
                         // If at limit, detection is dropped (sensor saturated)
@@ -1203,6 +1378,25 @@ impl DetectionSystem {
             .filter(|t| t.target_id == target_id)
             .map(|t| t.track_quality)
             .fold(0.0, f64::max)
+    }
+
+    /// Get the best Kalman state for a target (from track with most measurements)
+    /// Used for filtered intercept calculations
+    pub fn get_kalman_state(&self, target_id: EntityId) -> Option<&BallisticState> {
+        self.active_tracks
+            .iter()
+            .filter(|t| t.target_id == target_id && t.kalman_filter.is_some())
+            .max_by_key(|t| t.position_history.len())
+            .and_then(|t| t.kalman_filter.as_ref())
+    }
+
+    /// Get best EKF state for a target (from highest-quality track)
+    pub fn get_ekf_state(&self, target_id: EntityId) -> Option<&crate::simulation::ekf::EKFState> {
+        self.active_tracks
+            .iter()
+            .filter(|t| t.target_id == target_id && t.ekf_state.is_some())
+            .max_by_key(|t| t.position_history.len())
+            .and_then(|t| t.ekf_state.as_ref())
     }
 
     /// Get a fused track for a target, combining all sensor tracks

@@ -6,7 +6,10 @@ use crate::simulation::config::{
 };
 use crate::simulation::detection::DetectionSystem;
 use crate::simulation::entities::*;
-use crate::simulation::physics::{haversine_distance, interpolate_great_circle, BallisticTrajectory, FlightPhase};
+use crate::simulation::physics::{
+    haversine_distance, interpolate_great_circle, BallisticTrajectory, FlightPhase,
+    predict_trajectory_from_track, TrackPrediction,
+};
 use rand::Rng;
 use std::collections::HashMap;
 use std::path::Path;
@@ -95,6 +98,10 @@ pub struct SimulationEngine {
     pub interceptor_configs: InterceptorConfigRegistry,
     /// Satellite configurations loaded from TOML files
     pub satellite_configs: SatelliteConfigRegistry,
+    /// Use Kalman-filtered estimates for intercept calculations instead of ground truth
+    /// When true: intercept solutions are calculated from sensor track data
+    /// When false: uses actual missile position (ground truth) for intercept calculation
+    pub use_filtered_intercepts: bool,
 }
 
 impl SimulationEngine {
@@ -151,6 +158,7 @@ impl SimulationEngine {
             platform_configs,
             interceptor_configs,
             satellite_configs,
+            use_filtered_intercepts: true, // Enable filtered intercepts by default
         }
     }
 
@@ -611,7 +619,7 @@ impl SimulationEngine {
                     continue;
                 }
 
-                if let Some((_, intercept_pos, intercept_alt)) =
+                if let Some((_, intercept_pos, intercept_alt, _uncertainty)) =
                     self.calculate_intercept_solution_from_track(unit, target_id)
                 {
                     launches.push((unit_idx, target_id, intercept_pos, intercept_alt, true));
@@ -687,7 +695,7 @@ impl SimulationEngine {
                     continue;
                 }
 
-                if let Some((time_to_intercept, intercept_pos, intercept_alt)) =
+                if let Some((time_to_intercept, intercept_pos, intercept_alt, _uncertainty)) =
                     self.calculate_intercept_solution_from_track(unit, target_id)
                 {
                     // Determine doctrine: Shoot-Look-Shoot vs Shoot-Shoot-Look
@@ -971,11 +979,13 @@ impl SimulationEngine {
     /// - High update rates (10-100 Hz vs 1-5 Hz for search radars)
     /// - Precision tracking (<1km position accuracy within range)
     /// - Doppler velocity measurement
+    ///
+    /// Returns (intercept_time, intercept_position, intercept_altitude, uncertainty_km)
     fn calculate_intercept_solution_from_track(
         &self,
         unit: &DefenseUnit,
         target_id: EntityId,
-    ) -> Option<(f64, GeoCoord, f64)> {
+    ) -> Option<(f64, GeoCoord, f64, f64)> {
         // 1. Get fused sensor track - if no track, cannot engage
         let defense_unit_ids: std::collections::HashSet<EntityId> = self.defense_units.iter().map(|u| u.id).collect();
         let fused_track = self.detection.get_fused_track(target_id, &defense_unit_ids)?;
@@ -996,18 +1006,173 @@ impl SimulationEngine {
             return None; // Need at least 3 measurements to establish track
         }
 
-        // 4. Track established - fire control radar can now lock on
-        // Fire control radar provides high-precision trajectory data
-        // Get actual missile for fire control radar tracking
-        let missile = self.missiles.iter().find(|m| m.id == target_id)?;
+        // 4. Choose between filtered estimates and ground truth
+        if self.use_filtered_intercepts {
+            // Use Kalman-filtered track data for intercept calculation
+            self.calculate_intercept_from_filtered_track(unit, target_id, &fused_track)
+        } else {
+            // Fall back to ground truth (legacy behavior)
+            let missile = self.missiles.iter().find(|m| m.id == target_id)?;
+            let (time, pos, alt) = self.calculate_intercept_solution(unit, missile)?;
+            Some((time, pos, alt, 0.0)) // Zero uncertainty for ground truth
+        }
+    }
 
-        // Fire control radar tracking (represents high-precision measurement)
-        // Fire control radars have 1-3km position accuracy - much better than
-        // reconstructed trajectory from search radars (100+ km error)
+    /// Calculate intercept solution using Kalman-filtered track estimates
+    /// This represents realistic fire control radar behavior
+    fn calculate_intercept_from_filtered_track(
+        &self,
+        unit: &DefenseUnit,
+        target_id: EntityId,
+        fused_track: &crate::simulation::detection::FusedTrack,
+    ) -> Option<(f64, GeoCoord, f64, f64)> {
+        // Get Kalman state for better position/velocity estimates
+        let kalman_state = self.detection.get_kalman_state(target_id);
 
-        // Use actual missile trajectory for intercept calculation
-        // This represents what the fire control radar measures with high precision
-        self.calculate_intercept_solution(unit, missile)
+        // Build trajectory prediction from track data
+        let prediction = predict_trajectory_from_track(fused_track, kalman_state, 300.0)?;
+
+        // Calculate intercept using the predicted trajectory
+        self.calculate_intercept_from_prediction(unit, &prediction)
+    }
+
+    /// Calculate intercept solution using predicted trajectory from filtered estimates
+    fn calculate_intercept_from_prediction(
+        &self,
+        unit: &DefenseUnit,
+        prediction: &TrackPrediction,
+    ) -> Option<(f64, GeoCoord, f64, f64)> {
+        let trajectory = &prediction.trajectory;
+        let time_to_impact = prediction.time_to_impact_sec;
+
+        if time_to_impact <= 0.0 {
+            return None;
+        }
+
+        // Get current velocity for intercept estimation
+        let velocity = trajectory.target; // direction of travel
+        let ground_speed_estimate = if let Some(origin_to_target) = Some(haversine_distance(trajectory.origin, trajectory.target)) {
+            origin_to_target / trajectory.flight_time_sec
+        } else {
+            5.0 // Default 5 km/s for ballistic missiles
+        };
+
+        // Initial guess using average interceptor speed
+        let avg_speed = self.interceptor_avg_speed(unit.defense_type);
+        let current_pos_estimate = trajectory.position_at(prediction.current_progress).0;
+        let initial_range = haversine_distance(unit.position, current_pos_estimate);
+        let closing_speed = avg_speed + ground_speed_estimate * 0.5;
+        let mut t_intercept = initial_range / closing_speed;
+
+        // Iterative refinement
+        let mut best_solution: Option<(f64, GeoCoord, f64, f64)> = None;
+        let mut best_error = f64::MAX;
+
+        for iteration in 0..20 {
+            // Where will target be at time t_intercept from now?
+            let future_progress = prediction.current_progress + t_intercept / trajectory.flight_time_sec;
+
+            if future_progress >= 0.98 {
+                t_intercept *= 0.7;
+                continue;
+            }
+
+            let (predicted_pos, predicted_alt) = trajectory.position_at(future_progress);
+
+            // Calculate interceptor flight time to this point
+            let t_required = self.calculate_flight_time(
+                unit.defense_type,
+                unit.position,
+                predicted_pos,
+                predicted_alt,
+            );
+
+            let timing_error = t_required - t_intercept;
+            let abs_error = timing_error.abs();
+
+            // Track best solution
+            let dist_to_intercept = haversine_distance(unit.position, predicted_pos);
+            if abs_error < best_error {
+                let interceptor_config = self.get_interceptor_config_for_unit(unit);
+                let platform_config = self.get_platform_config(unit.defense_type);
+                let alt_ok = predicted_alt >= interceptor_config.altitude_envelope.min_engagement_altitude_km
+                    && predicted_alt <= interceptor_config.altitude_envelope.max_engagement_altitude_km;
+                let range_ok = dist_to_intercept <= platform_config.launcher.engagement_range_km;
+                let time_ok = t_intercept <= time_to_impact - 3.0;
+
+                if alt_ok && range_ok && time_ok {
+                    best_error = abs_error;
+                    // Calculate uncertainty at intercept point
+                    let uncertainty_at_intercept = prediction.uncertainty.uncertainty_at_time(t_intercept);
+                    best_solution = Some((t_required, predicted_pos, predicted_alt, uncertainty_at_intercept));
+                }
+            }
+
+            if abs_error < 1.0 {
+                if let Some(solution) = best_solution {
+                    return Some(solution);
+                }
+            }
+
+            let adjustment = if iteration < 10 {
+                timing_error * 0.7
+            } else {
+                timing_error * 0.4
+            };
+            t_intercept += adjustment;
+
+            let max_time = (time_to_impact - 5.0).max(5.0);
+            t_intercept = t_intercept.clamp(2.0, max_time);
+        }
+
+        // Return best solution if good enough
+        if let Some(solution) = best_solution {
+            if best_error < 5.0 {
+                return Some(solution);
+            }
+        }
+
+        // Fallback scan
+        for step in 1..20 {
+            let future_time = step as f64 * 5.0;
+            if future_time > time_to_impact - 5.0 {
+                break;
+            }
+
+            let future_progress = prediction.current_progress + future_time / trajectory.flight_time_sec;
+            if future_progress >= 0.98 {
+                break;
+            }
+
+            let (predicted_pos, predicted_alt) = trajectory.position_at(future_progress);
+
+            let interceptor_config = self.get_interceptor_config_for_unit(unit);
+            let platform_config = self.get_platform_config(unit.defense_type);
+            let alt_ok = predicted_alt >= interceptor_config.altitude_envelope.min_engagement_altitude_km
+                && predicted_alt <= interceptor_config.altitude_envelope.max_engagement_altitude_km;
+            if !alt_ok {
+                continue;
+            }
+
+            let dist = haversine_distance(unit.position, predicted_pos);
+            if dist > platform_config.launcher.engagement_range_km {
+                continue;
+            }
+
+            let t_flight = self.calculate_flight_time(
+                unit.defense_type,
+                unit.position,
+                predicted_pos,
+                predicted_alt,
+            );
+
+            if t_flight <= future_time + 2.0 {
+                let uncertainty_at_intercept = prediction.uncertainty.uncertainty_at_time(future_time);
+                return Some((t_flight, predicted_pos, predicted_alt, uncertainty_at_intercept));
+            }
+        }
+
+        None
     }
 
     /// Calculate flight time for interceptor using kinematics model
