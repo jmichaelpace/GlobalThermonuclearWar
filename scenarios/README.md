@@ -141,6 +141,21 @@ See `pacific_theater.toml`, `middle_east.toml`, or `demo.toml` for complete exam
 
 ## Creating New Scenarios
 
+Two ways:
+
+### In-App Scenario Builder (recommended)
+
+Click **Builder** in the top bar. You can:
+
+- **Place entities on the map**: pick a tool (Defense / Radar / Satellite / Missile), click to place. Missiles use a two-click flow: launch point, then target (with a rubber-band preview; Esc cancels).
+- **Edit properties**: click a placed entity (Select tool) or pick it from the entity lists — edit name, affiliation, type (dropdowns prevent case-sensitivity mistakes), interceptors, ranges, launch delays, etc.
+- **Import existing scenarios**: the Import section clones any loaded scenario into the draft for editing.
+- **Validation is live**: errors (bad coordinates, duplicate names, origin == target, ...) block Save/Test Run; warnings (no missiles, impact point far from all defenders, unknown sensor config) don't block but explain likely problems.
+- **Test Run** loads the draft into the live engine without saving — place entities, watch the engagement, tweak, re-test.
+- **Save** writes `scenarios/<filename>.toml` and the new scenario appears immediately in the Scenarios panel (loading it selects it).
+
+### By hand
+
 1. Create a new `.toml` file in this directory
 2. Follow the format above
 3. Use realistic coordinates and equipment specifications
@@ -154,3 +169,5 @@ See `pacific_theater.toml`, `middle_east.toml`, or `demo.toml` for complete exam
 - Launch delays are in seconds from scenario start
 - Affiliation determines IFF (Identification Friend or Foe)
 - Defense system types must match the available types exactly (case-sensitive)
+- Missile classes (SRBM/MRBM/IRBM/ICBM) are auto-derived from range at load:
+  SRBM < 1000 km ≤ MRBM < 3000 km ≤ IRBM < 5500 km ≤ ICBM

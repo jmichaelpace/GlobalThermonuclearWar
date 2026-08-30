@@ -36,11 +36,18 @@ hit_probability = 0.56
 # Weight factor for terminal homing accuracy (0.0-1.0, higher = better terminal guidance)
 terminal_blend_factor = 0.15
 
+# Mid-course guidance - GBI has extensive DACS (Divert and Attitude Control System)
+[engagement.midcourse_guidance]
+divert_budget_km = 150.0  # Large budget for long-range intercepts
+update_interval_sec = 3.0  # Frequent updates during long flight
+min_correction_km = 2.0
+enabled = true
+
 # Kill vehicle parameters
 [kill_envelope]
 # Range at which seeker can acquire and track target (km)
 seeker_range_km = 100.0
 # Effective radius for kinetic kill (km) - how close interceptor must pass
-kill_radius_km = 8.0
+kill_radius_km = 0.15  # Hit-to-kill: must physically collide (~150m for largest EKV)
 # Base probability of kill given successful intercept (0.0-1.0)
 base_pk = 0.56

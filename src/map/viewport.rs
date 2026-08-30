@@ -1,18 +1,7 @@
 use eframe::egui;
-use serde::{Deserialize, Serialize};
 
-/// Geographic coordinate (latitude, longitude)
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub struct GeoCoord {
-    pub lat: f64,
-    pub lon: f64,
-}
-
-impl GeoCoord {
-    pub fn new(lat: f64, lon: f64) -> Self {
-        Self { lat, lon }
-    }
-}
+// Re-export GeoCoord from shared types
+pub use crate::types::GeoCoord;
 
 /// Map viewport handling pan, zoom, and coordinate transformations
 pub struct Viewport {
@@ -94,7 +83,11 @@ impl Viewport {
 
     /// Convert geographic coordinates to screen pixels for all wrapped instances
     /// Returns up to 3 positions (main + left wrap + right wrap) that are visible
-    pub fn geo_to_screen_wrapped(&self, coord: GeoCoord, screen_rect: egui::Rect) -> Vec<egui::Pos2> {
+    pub fn geo_to_screen_wrapped(
+        &self,
+        coord: GeoCoord,
+        screen_rect: egui::Rect,
+    ) -> Vec<egui::Pos2> {
         let scale = self.pixels_per_degree(screen_rect);
         let world_width_pixels = 360.0 * scale;
 
@@ -131,7 +124,7 @@ impl Viewport {
     }
 
     /// Get pixels per degree at current zoom level
-    fn pixels_per_degree(&self, screen_rect: egui::Rect) -> f64 {
+    pub fn pixels_per_degree(&self, screen_rect: egui::Rect) -> f64 {
         let base_scale = screen_rect.width() as f64 / 360.0;
         base_scale * 2.0_f64.powf(self.zoom)
     }
@@ -222,10 +215,15 @@ impl Viewport {
     }
 
     /// Get the screen rect for a tile (using unwrapped coordinates for proper positioning)
-    pub fn visible_tile_screen_rect(&self, tile: &VisibleTile, screen_rect: egui::Rect) -> egui::Rect {
+    pub fn visible_tile_screen_rect(
+        &self,
+        tile: &VisibleTile,
+        screen_rect: egui::Rect,
+    ) -> egui::Rect {
         // Use unwrapped_x for screen position calculation to handle world wrapping
         let top_left = Self::tile_to_geo_unwrapped(tile.unwrapped_x, tile.coord.y, tile.coord.z);
-        let bottom_right = Self::tile_to_geo_unwrapped(tile.unwrapped_x + 1, tile.coord.y + 1, tile.coord.z);
+        let bottom_right =
+            Self::tile_to_geo_unwrapped(tile.unwrapped_x + 1, tile.coord.y + 1, tile.coord.z);
 
         // Use unwrapped geo_to_screen to avoid longitude wrapping issues
         let screen_tl = self.geo_to_screen_unwrapped(top_left, screen_rect);
@@ -239,7 +237,9 @@ impl Viewport {
     fn tile_to_geo_unwrapped(x: i32, y: u32, z: u32) -> GeoCoord {
         let n = 2.0_f64.powi(z as i32);
         let lon = x as f64 / n * 360.0 - 180.0;
-        let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).sinh().atan();
+        let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n))
+            .sinh()
+            .atan();
         GeoCoord::new(lat_rad.to_degrees(), lon)
     }
 
@@ -247,7 +247,9 @@ impl Viewport {
     fn tile_to_geo(x: u32, y: u32, z: u32) -> GeoCoord {
         let n = 2.0_f64.powi(z as i32);
         let lon = x as f64 / n * 360.0 - 180.0;
-        let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).sinh().atan();
+        let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n))
+            .sinh()
+            .atan();
         GeoCoord::new(lat_rad.to_degrees(), lon)
     }
 }

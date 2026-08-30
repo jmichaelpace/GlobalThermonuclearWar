@@ -1,6 +1,9 @@
 use crate::map::{GeoCoord, Viewport};
-use crate::simulation::{Affiliation, BallisticTrajectory, Missile, MissileStatus, Interceptor, InterceptorStatus, InterceptorPhase, SensorKind};
-use eframe::egui::{self, Color32, Pos2, Stroke, FontId};
+use crate::simulation::{
+    Affiliation, BallisticTrajectory, Interceptor, InterceptorPhase, InterceptorStatus, Missile,
+    MissileStatus, SensorKind,
+};
+use eframe::egui::{self, Color32, FontId, Pos2, Stroke};
 
 /// Render detection and tracking overlays
 pub struct DetectionOverlays;
@@ -30,12 +33,8 @@ impl DetectionOverlays {
 
         // Fade based on track quality
         let alpha = (track_quality * 180.0) as u8 + 50;
-        let color = Color32::from_rgba_unmultiplied(
-            base_color.r(),
-            base_color.g(),
-            base_color.b(),
-            alpha,
-        );
+        let color =
+            Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), alpha);
 
         // Draw dashed line
         Self::draw_dashed_line(painter, sensor_screen, target_screen, color, 2.0, 8.0, 4.0);
@@ -92,11 +91,7 @@ impl DetectionOverlays {
             Pos2::new(pos.x, pos.y + size),
             Pos2::new(pos.x - size, pos.y),
         ];
-        painter.add(egui::Shape::convex_polygon(
-            points,
-            color,
-            Stroke::NONE,
-        ));
+        painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
     }
 
     /// Draw a radar cone/sector for a directional radar
@@ -105,8 +100,8 @@ impl DetectionOverlays {
         viewport: &Viewport,
         screen_rect: egui::Rect,
         position: GeoCoord,
-        facing_deg: f64,        // Direction the radar faces (0 = North)
-        coverage_deg: f64,      // Width of coverage arc
+        facing_deg: f64,   // Direction the radar faces (0 = North)
+        coverage_deg: f64, // Width of coverage arc
         range_km: f64,
         affiliation: Affiliation,
     ) {
@@ -166,7 +161,10 @@ impl DetectionOverlays {
         // Draw arc outline
         if points.len() >= 2 {
             let arc_points: Vec<Pos2> = points[1..].to_vec();
-            painter.add(egui::Shape::line(arc_points, Stroke::new(1.5, stroke_color)));
+            painter.add(egui::Shape::line(
+                arc_points,
+                Stroke::new(1.5, stroke_color),
+            ));
 
             // Draw radial lines
             painter.line_segment([center, points[1]], Stroke::new(1.0, stroke_color));
@@ -199,11 +197,7 @@ impl DetectionOverlays {
 
         // Inner ring for high quality detections
         if quality > 0.6 {
-            painter.circle_stroke(
-                pos,
-                size * 0.7,
-                Stroke::new(1.5, color.gamma_multiply(0.7)),
-            );
+            painter.circle_stroke(pos, size * 0.7, Stroke::new(1.5, color.gamma_multiply(0.7)));
         }
     }
 
@@ -292,12 +286,9 @@ impl DetectionOverlays {
 
         // Draw pulsing outer ring for low quality tracks
         if quality < 0.5 {
-            let pulse_color = Color32::from_rgba_unmultiplied(r, g, 50, (stroke_alpha as f64 * 0.4) as u8);
-            painter.circle_stroke(
-                center,
-                radius_pixels * 1.15,
-                Stroke::new(1.0, pulse_color),
-            );
+            let pulse_color =
+                Color32::from_rgba_unmultiplied(r, g, 50, (stroke_alpha as f64 * 0.4) as u8);
+            painter.circle_stroke(center, radius_pixels * 1.15, Stroke::new(1.0, pulse_color));
         }
 
         // Draw crosshairs for very low quality (uncertain position)
@@ -323,11 +314,7 @@ impl DetectionOverlays {
 
     /// Draw a false alarm marker (clutter/noise detection)
     /// Shows as yellow/orange X marker to distinguish from real tracks
-    pub fn draw_false_alarm_marker(
-        painter: &egui::Painter,
-        pos: Pos2,
-        quality: f64,
-    ) {
+    pub fn draw_false_alarm_marker(painter: &egui::Painter, pos: Pos2, quality: f64) {
         let size = 6.0 + (quality * 4.0) as f32;
 
         // Use yellow/orange color for false alarms
@@ -391,7 +378,9 @@ impl TrajectoryOverlays {
         }
 
         // Skip if path crosses screen (date line issue)
-        let valid_path = path_points.windows(2).all(|w| w[0].distance(w[1]) < screen_rect.width() * 0.3);
+        let valid_path = path_points
+            .windows(2)
+            .all(|w| w[0].distance(w[1]) < screen_rect.width() * 0.3);
         if !valid_path || path_points.len() < 2 {
             return;
         }
@@ -404,7 +393,10 @@ impl TrajectoryOverlays {
         };
 
         // Draw trajectory arc
-        painter.add(egui::Shape::line(path_points.clone(), Stroke::new(2.0, path_color)));
+        painter.add(egui::Shape::line(
+            path_points.clone(),
+            Stroke::new(2.0, path_color),
+        ));
 
         // Draw impact marker at end
         if let Some(last) = path_points.last() {
@@ -457,28 +449,35 @@ impl TrajectoryOverlays {
         for i in 0..=segments {
             let t = progress + (1.0 - progress) * (i as f64 / segments as f64);
             // Simple linear interpolation for interceptor path
-            let lat = interceptor.launch_position.lat * (1.0 - t) + interceptor.target_position.lat * t;
-            let lon = interceptor.launch_position.lon * (1.0 - t) + interceptor.target_position.lon * t;
+            let lat =
+                interceptor.launch_position.lat * (1.0 - t) + interceptor.target_position.lat * t;
+            let lon =
+                interceptor.launch_position.lon * (1.0 - t) + interceptor.target_position.lon * t;
             let pos = GeoCoord::new(lat, lon);
             let screen_pos = viewport.geo_to_screen(pos, screen_rect);
             path_points.push(screen_pos);
         }
 
         // Skip if path crosses screen
-        let valid_path = path_points.windows(2).all(|w| w[0].distance(w[1]) < screen_rect.width() * 0.3);
+        let valid_path = path_points
+            .windows(2)
+            .all(|w| w[0].distance(w[1]) < screen_rect.width() * 0.3);
         if !valid_path || path_points.len() < 2 {
             return;
         }
 
         // Color based on flight phase
         let path_color = match interceptor.phase {
-            InterceptorPhase::Boost => Color32::from_rgba_unmultiplied(255, 200, 50, 200),   // Yellow/orange - thrusting
+            InterceptorPhase::Boost => Color32::from_rgba_unmultiplied(255, 200, 50, 200), // Yellow/orange - thrusting
             InterceptorPhase::Coast => Color32::from_rgba_unmultiplied(100, 200, 255, 180), // Light blue - coasting
             InterceptorPhase::Terminal => Color32::from_rgba_unmultiplied(50, 255, 150, 220), // Green - homing
         };
 
         // Draw trajectory line
-        painter.add(egui::Shape::line(path_points.clone(), Stroke::new(1.5, path_color)));
+        painter.add(egui::Shape::line(
+            path_points.clone(),
+            Stroke::new(1.5, path_color),
+        ));
 
         // Draw intercept point marker
         if let Some(last) = path_points.last() {
@@ -564,11 +563,17 @@ impl TrajectoryOverlays {
 
         // Draw X
         painter.line_segment(
-            [Pos2::new(pos.x - size, pos.y - size), Pos2::new(pos.x + size, pos.y + size)],
+            [
+                Pos2::new(pos.x - size, pos.y - size),
+                Pos2::new(pos.x + size, pos.y + size),
+            ],
             stroke,
         );
         painter.line_segment(
-            [Pos2::new(pos.x + size, pos.y - size), Pos2::new(pos.x - size, pos.y + size)],
+            [
+                Pos2::new(pos.x + size, pos.y - size),
+                Pos2::new(pos.x - size, pos.y + size),
+            ],
             stroke,
         );
     }
@@ -631,10 +636,7 @@ impl TrajectoryOverlays {
 
         // Draw vertical line indicating altitude
         let stroke = Stroke::new(1.5, color.gamma_multiply(0.6));
-        painter.line_segment(
-            [pos, Pos2::new(pos.x, pos.y - height)],
-            stroke,
-        );
+        painter.line_segment([pos, Pos2::new(pos.x, pos.y - height)], stroke);
 
         // Draw small tick at top
         let tick_width = 3.0;

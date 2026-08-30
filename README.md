@@ -169,6 +169,11 @@ Track quality is calculated from:
 - **Flight Phase Detection**: Boost (0-10%), Midcourse (10-85%), Terminal (85-100%)
 - **Great Circle Routing**: Ground track follows shortest path on Earth's surface
 - **Gravity-Based Descent**: Terminal phase acceleration under gravity
+- **Atmospheric Drag Model**: Altitude-dependent velocity reduction
+  - Exoatmospheric (>100km): No drag
+  - High altitude (80-100km): Minimal drag (~2% velocity loss)
+  - Terminal phase (<80km): Significant drag (up to 62% velocity loss at sea level)
+  - Drag affects intercept timing calculations
 
 ### Intercept Calculations
 
@@ -186,6 +191,143 @@ Track quality is calculated from:
 - **Time-to-Impact Margin**: Requires ≥3s margin before impact
 - **Interceptor Kinematics**: Realistic boost/coast/terminal phase flight modeling
 - **Two-Phase Flight Model**: Boost acceleration + coast at max velocity
+
+### Terminal Guidance
+
+- **Proportional Navigation (PN) Guidance**: True PN law implementation for terminal homing
+  - Calculates Line-of-Sight (LOS) angle and rate between interceptor and target
+  - Commands lateral acceleration proportional to LOS rate (a = N × Vc × dλ/dt)
+  - Navigation constants: 3.5 (exoatmospheric) to 4.5 (endoatmospheric)
+  - Only activates when seeker has acquired target
+- **Seeker Gimbal Limits**: Realistic field-of-view constraints
+  - Off-boresight angle tracking (angle between flight direction and target)
+  - Gimbal limits: 20-45° depending on interceptor type
+  - Seeker can lose lock if target exits gimbal envelope
+- **Seeker Acquisition**: Time-based acquisition modeling
+  - 0.5-second acquisition delay once target enters seeker FOV
+  - Pk severely reduced (5-30%) without seeker lock
+  - Lost lock requires re-acquisition
+
+### Divert & Energy Management
+
+- **Divert Budget Tracking**: Finite fuel for terminal maneuvers
+  - Total delta-V budget varies by system (SM-3: 0.15 km/s, THAAD: 0.3 km/s)
+  - PN guidance consumes divert fuel proportionally
+  - Interceptor goes ballistic when fuel exhausted
+- **Energy State Management**: Dynamic maneuverability tracking
+  - Exoatmospheric systems: purely fuel-based (no recovery)
+  - Endoatmospheric systems: partial energy recovery from aerodynamic lift
+  - Low energy state reduces Pk by up to 30%
+- **Skid Maneuver**: Last-resort timing correction
+  - Engages only when interceptor would arrive too early
+  - Uses perpendicular divert thrust to bleed speed
+  - Limited to 30% velocity reduction to preserve terminal energy
+
+### Debris & Fratricide
+
+- **Debris Cloud Modeling**: Realistic post-intercept hazards
+  - Successful intercepts create expanding debris clouds
+  - Initial radius: 0.5 km, expansion rate: 0.2 km/s
+  - Debris remains hazardous for ~10 seconds
+- **Debris Cloud Interference**: Fratricide risk for follow-on shots
+  - Interceptors passing through debris have probabilistic damage (up to 30%)
+  - Deeper penetration = higher damage probability
+  - Affected interceptors marked as failed
+- **Kill Assessment Delay**: Realistic battle damage assessment
+  - 3-second delay before intercept result is known
+  - Shoot-Look-Shoot doctrine waits for confirmed miss before follow-up
+  - Prevents wasting interceptors on already-destroyed targets
+
+### Mid-Course Guidance
+
+During flight, interceptors receive updated guidance commands from the launching platform's fire control system. This models real-world systems like GBI, SM-3, and THAAD that rely on continuous sensor-fused track updates to refine their intercept solutions.
+
+**How Mid-Course Guidance Works:**
+
+1. **Sensor-Fused Tracking**: The fire control radar maintains a track on the incoming threat, fusing data from multiple sensors (early warning radars, search radars, fire control radars)
+
+2. **Trajectory Prediction**: The battle management system uses the fused track's estimated position and velocity to predict where the target will be at the projected intercept time
+
+3. **Uplink Commands**: The updated predicted intercept point (PIP) is transmitted to the interceptor via datalink
+
+4. **Course Corrections**: The interceptor adjusts its flight path toward the new PIP
+
+**Key Requirement - Fire Control Lock:**
+
+Mid-course guidance requires the launching platform to have an active **fire control lock** on the target. This means:
+- A fire control radar (AN/TPY-2, AN/SPY-1, AN/MPQ-65, etc.) must be tracking the target
+- The track must be of sufficient quality to compute trajectory predictions
+- If fire control lock is lost, mid-course guidance updates stop
+
+**Sensor-Fused Track Prediction:**
+
+The guidance system uses `FusedTrack.project_forward()` to predict target position:
+- Projects current estimated position along the estimated velocity vector
+- Prediction uncertainty grows with time and lower track confidence
+- Poor velocity estimates lead to poor predictions, degrading intercept accuracy
+
+**Guidance Update Conditions:**
+
+- Interceptor must be **in flight** (not pending or terminated)
+- Interceptor must be past early boost phase (>15% flight progress)
+- Interceptor must not be in **Terminal phase** (seeker has taken over)
+- **Fire control lock required** on the target
+- At least 2 seconds remaining before predicted intercept
+- Correction must exceed 0.5 km threshold
+
+**Practical Effects:**
+
+- **No track = No guidance**: If sensors lose the target, mid-course updates stop and the interceptor flies its original solution
+- **Poor track = Poor guidance**: Low-quality tracks give inaccurate trajectory predictions, leading to suboptimal corrections
+- **Better sensors = Better intercepts**: High-quality fire control tracking with good velocity estimates directly improves intercept success
+- **Pk recalculation**: After each guidance update, the interceptor's Pk is recalculated based on the new intercept geometry
+
+### Continuous Probability of Kill (Pk) Evaluation
+
+During flight, each interceptor continuously evaluates its probability of successfully destroying the target. This Pk assessment uses multiple factors that reflect real-world engagement physics:
+
+**Pk Calculation Factors:**
+
+1. **Aspect Angle Factor (3D Geometry)**: Considers both horizontal and vertical crossing angles
+   - Horizontal: Head-on (180°) optimal, tail-chase (0°) worst
+   - Vertical: Steep crossing angles (60°+) significantly harder
+   - Combined factor: 70% horizontal weight, 30% vertical weight
+
+2. **Track Quality Factor**: Higher-quality sensor tracks (more measurements, recent updates, multi-sensor fusion) yield better intercept solutions. Degraded tracks reduce Pk proportionally.
+
+3. **Closure Speed Factor**: Very high closure speeds reduce seeker acquisition time and maneuver capability. Optimal closure speeds (~4 km/s) maximize Pk; >12 km/s significantly degrades it.
+
+4. **Energy State Factor**: Interceptor's remaining maneuver capability
+   - Full energy (>50%): No penalty
+   - Low energy (20-50%): 10% penalty
+   - Depleted (<20%): Up to 30% penalty
+
+5. **Countermeasures Factor**: Each decoy deployed by the target reduces Pk by degrading the interceptor's ability to discriminate the real warhead.
+
+6. **Prediction Error Factor**: Compares the planned intercept point against the target's predicted future trajectory. Large deviations between where the interceptor is heading and where the missile will actually be reduce Pk significantly.
+
+7. **Timing Synchronization Factor**: The interceptor and target must arrive at the intercept point within a small time window. If timing diverges beyond a margin (based on seeker range and closure speed), Pk drops to zero.
+
+8. **Seeker Acquisition Factor**: Whether the seeker has locked onto target
+   - Acquired: No penalty
+   - In FOV but not acquired: 70% penalty
+   - Outside gimbal limits: 95% penalty
+
+**Pk Formula:**
+```
+Pk = base_pk × aspect_factor × track_quality_factor × closure_factor
+     × energy_factor × countermeasures_factor × prediction_error_factor
+     × timing_factor × seeker_factor
+```
+
+**Practical Implications:**
+- Interceptors with degraded Pk may still attempt engagement but are less likely to succeed
+- Early detection and high-quality tracks are critical for successful intercepts
+- Countermeasures (decoys) significantly reduce intercept probability
+- Timing mismatches from stale tracks or maneuvering targets can cause complete misses
+- Seeker acquisition is critical—blind shots rarely succeed
+- Energy-depleted interceptors cannot make final corrections
+- The simulation logs Pk at intercept for post-engagement analysis
 
 ### Defense System Capabilities
 

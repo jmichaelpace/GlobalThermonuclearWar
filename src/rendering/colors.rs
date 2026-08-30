@@ -1,5 +1,5 @@
-use eframe::egui::Color32;
 use crate::simulation::Affiliation;
+use eframe::egui::Color32;
 
 /// Color utilities for consistent rendering across the application.
 /// Eliminates duplicate `match affiliation` blocks throughout the codebase.
@@ -11,9 +11,9 @@ use crate::simulation::Affiliation;
 /// Get the base color for an affiliation (full opacity)
 pub fn affiliation_base(affiliation: Affiliation) -> Color32 {
     match affiliation {
-        Affiliation::Friendly => Color32::from_rgb(80, 180, 255),  // Blue
-        Affiliation::Hostile => Color32::from_rgb(255, 80, 80),    // Red
-        Affiliation::Neutral => Color32::from_rgb(100, 255, 100),  // Green
+        Affiliation::Friendly => Color32::from_rgb(80, 180, 255), // Blue
+        Affiliation::Hostile => Color32::from_rgb(255, 80, 80),   // Red
+        Affiliation::Neutral => Color32::from_rgb(100, 255, 100), // Green
     }
 }
 
@@ -118,18 +118,18 @@ pub fn interceptor_path_color() -> Color32 {
 /// Defense unit marker color
 pub fn defense_unit_marker(affiliation: Affiliation) -> Color32 {
     match affiliation {
-        Affiliation::Friendly => Color32::from_rgb(80, 200, 120),   // Green
-        Affiliation::Hostile => Color32::from_rgb(255, 100, 100),   // Red
-        Affiliation::Neutral => Color32::from_rgb(200, 200, 100),   // Yellow
+        Affiliation::Friendly => Color32::from_rgb(80, 200, 120), // Green
+        Affiliation::Hostile => Color32::from_rgb(255, 100, 100), // Red
+        Affiliation::Neutral => Color32::from_rgb(200, 200, 100), // Yellow
     }
 }
 
 /// Radar station marker color
 pub fn radar_station_marker(affiliation: Affiliation) -> Color32 {
     match affiliation {
-        Affiliation::Friendly => Color32::from_rgb(100, 180, 255),  // Blue
-        Affiliation::Hostile => Color32::from_rgb(255, 120, 120),   // Red
-        Affiliation::Neutral => Color32::from_rgb(180, 180, 180),   // Gray
+        Affiliation::Friendly => Color32::from_rgb(100, 180, 255), // Blue
+        Affiliation::Hostile => Color32::from_rgb(255, 120, 120),  // Red
+        Affiliation::Neutral => Color32::from_rgb(180, 180, 180),  // Gray
     }
 }
 

@@ -36,11 +36,18 @@ hit_probability = 0.80
 # Weight factor for terminal homing accuracy (0.0-1.0, higher = better terminal guidance)
 terminal_blend_factor = 0.40
 
+# Mid-course guidance - THAAD uses divert thrusters for endo/exo-atmospheric maneuvers
+[engagement.midcourse_guidance]
+divert_budget_km = 60.0  # Moderate divert for terminal area defense
+update_interval_sec = 2.0  # Fast updates due to shorter flight time
+min_correction_km = 0.5
+enabled = true
+
 # Kill vehicle parameters
 [kill_envelope]
 # Range at which seeker can acquire and track target (km)
 seeker_range_km = 50.0
 # Effective radius for kinetic kill (km) - how close interceptor must pass
-kill_radius_km = 3.0
+kill_radius_km = 0.1  # Hit-to-kill: must physically collide (~100m)
 # Base probability of kill given successful intercept (0.0-1.0)
 base_pk = 0.90

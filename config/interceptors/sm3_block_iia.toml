@@ -36,11 +36,18 @@ hit_probability = 0.85
 # Weight factor for terminal homing accuracy (0.0-1.0, higher = better terminal guidance)
 terminal_blend_factor = 0.15
 
+# Mid-course guidance - SM-3 has solid-fuel DACS for exoatmospheric maneuvers
+[engagement.midcourse_guidance]
+divert_budget_km = 100.0  # Good divert capability for midcourse intercepts
+update_interval_sec = 4.0
+min_correction_km = 1.5
+enabled = true
+
 # Kill vehicle parameters
 [kill_envelope]
 # Range at which seeker can acquire and track target (km)
 seeker_range_km = 80.0
 # Effective radius for kinetic kill (km) - how close interceptor must pass
-kill_radius_km = 5.0
+kill_radius_km = 0.1  # Hit-to-kill: must physically collide (~100m)
 # Base probability of kill given successful intercept (0.0-1.0)
 base_pk = 0.80

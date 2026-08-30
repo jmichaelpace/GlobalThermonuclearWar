@@ -45,6 +45,14 @@ type = "Patriot"
 interceptors = 64
 
 [[defense_units]]
+name = "THAAD - Riyadh"
+affiliation = "Friendly"
+lat = 24.9
+lon = 46.5
+type = "THAAD"
+interceptors = 48
+
+[[defense_units]]
 name = "THAAD - UAE"
 affiliation = "Friendly"
 lat = 24.5

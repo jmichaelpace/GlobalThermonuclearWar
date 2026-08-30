@@ -1,21 +1,98 @@
 use crate::effects::EffectType;
 use crate::map::GeoCoord;
 use crate::simulation::{
-    Affiliation, DefenseUnit, EntityId, Interceptor, InterceptorStatus, Missile, MissileStatus,
+    haversine_distance, Affiliation, DefenseType, DefenseUnit, EntityId, Interceptor,
+    InterceptorStatus, Missile, MissileStatus, SimEventType,
 };
 use std::collections::HashMap;
+
+/// Detailed information about a successful intercept
+#[derive(Clone, Debug)]
+pub struct InterceptResult {
+    pub id: EntityId,
+    pub time: f64,
+    pub interceptor_type: String,
+    pub defense_unit_name: String,
+    pub defense_type: DefenseType,
+    pub target_name: String,
+    pub intercept_position: GeoCoord,
+    pub intercept_altitude_km: f64,
+    pub launch_position: GeoCoord,
+    pub distance_from_platform_km: f64,
+    pub flight_time_sec: f64,
+    pub closure_speed_km_s: f64,
+    pub target_velocity_km_s: f64,
+    pub interceptor_velocity_km_s: f64,
+}
 
 /// Event types for the event log
 #[derive(Clone, Debug)]
 pub enum EventType {
-    MissileLaunch { name: String },
-    ThreatDetected { threat_name: String, sensor_name: String },
-    InterceptorLaunch { defense_unit: String, target: String },
-    InterceptHit { target: String },
-    InterceptMiss { target: String },
-    MissileImpact { name: String },
-    DecoyDeployed { missile_name: String, decoys_active: u32 },
+    MissileLaunch {
+        name: String,
+    },
+    ThreatDetected {
+        threat_name: String,
+        sensor_name: String,
+    },
+    InterceptorLaunch {
+        defense_unit: String,
+        target: String,
+    },
+    InterceptHit {
+        target: String,
+    },
+    InterceptMiss {
+        target: String,
+    },
+    MissileImpact {
+        name: String,
+    },
+    DecoyDeployed {
+        missile_name: String,
+        decoys_active: u32,
+    },
     AllThreatsNeutralized,
+    /// Mid-course guidance update sent to interceptor
+    GuidanceUpdate {
+        interceptor_type: String,
+        target: String,
+        correction_km: f64,
+        update_count: u32,
+    },
+    /// Mid-course guidance blocked (for debugging)
+    GuidanceBlocked {
+        interceptor_type: String,
+        target: String,
+        reason: String,
+    },
+}
+
+impl From<SimEventType> for EventType {
+    fn from(event: SimEventType) -> Self {
+        match event {
+            SimEventType::GuidanceUpdate {
+                interceptor_type,
+                target,
+                correction_km,
+                update_count,
+            } => EventType::GuidanceUpdate {
+                interceptor_type,
+                target,
+                correction_km,
+                update_count,
+            },
+            SimEventType::GuidanceBlocked {
+                interceptor_type,
+                target,
+                reason,
+            } => EventType::GuidanceBlocked {
+                interceptor_type,
+                target,
+                reason,
+            },
+        }
+    }
 }
 
 /// A single event in the log
@@ -62,6 +139,7 @@ pub struct EffectRequest {
 /// Consolidated event tracking state
 pub struct EventTracker {
     pub event_log: EventLog,
+    pub intercept_results: Vec<InterceptResult>,
     missile_states: HashMap<EntityId, MissileStatus>,
     interceptor_count: usize,
     intercept_states: HashMap<EntityId, InterceptorStatus>,
@@ -78,6 +156,7 @@ impl EventTracker {
     pub fn new() -> Self {
         Self {
             event_log: EventLog::new(),
+            intercept_results: Vec::new(),
             missile_states: HashMap::new(),
             interceptor_count: 0,
             intercept_states: HashMap::new(),
@@ -88,6 +167,7 @@ impl EventTracker {
     /// Clear all tracking state (called when loading new scenario)
     pub fn clear(&mut self) {
         self.event_log.clear();
+        self.intercept_results.clear();
         self.missile_states.clear();
         self.interceptor_count = 0;
         self.intercept_states.clear();
@@ -96,12 +176,14 @@ impl EventTracker {
 
     /// Check for state changes and generate events
     /// Returns a list of effect requests that should be spawned
+    /// interceptor_type_fn: function to get interceptor type name from DefenseType
     pub fn check_for_events(
         &mut self,
         sim_time: f64,
         missiles: &[Missile],
         interceptors: &[Interceptor],
         defense_units: &[DefenseUnit],
+        interceptor_type_fn: impl Fn(DefenseType) -> String,
     ) -> Vec<EffectRequest> {
         let mut effects = Vec::new();
 
@@ -155,7 +237,8 @@ impl EventTracker {
                         },
                     );
                 }
-                self.decoy_counts.insert(missile.id, missile.decoys_deployed);
+                self.decoy_counts
+                    .insert(missile.id, missile.decoys_deployed);
             }
         }
 
@@ -205,12 +288,64 @@ impl EventTracker {
                     self.event_log.add(
                         sim_time,
                         EventType::InterceptHit {
-                            target: target_name,
+                            target: target_name.clone(),
                         },
                     );
-                    // Request intercept visual effect
+
+                    // Find the target missile to get its velocity
+                    let target_missile = missiles.iter().find(|m| m.id == interceptor.target_id);
+                    let target_velocity = target_missile
+                        .map(|m| {
+                            // Estimate velocity from trajectory: distance / flight_time
+                            let range = haversine_distance(m.origin, m.target);
+                            range / m.flight_time.max(1.0)
+                        })
+                        .unwrap_or(4.0); // Default ~4 km/s for MRBM
+
+                    // Find defense unit name
+                    let defense_unit = defense_units
+                        .iter()
+                        .find(|u| u.id == interceptor.launcher_id);
+                    let unit_name = defense_unit
+                        .map(|u| u.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+
+                    // Calculate straight-line distance from launch position to intercept
+                    let horizontal_dist = haversine_distance(
+                        interceptor.launch_position,
+                        interceptor.target_position,
+                    );
+                    let altitude_diff = interceptor.target_altitude_km;
+                    let distance_3d = (horizontal_dist.powi(2) + altitude_diff.powi(2)).sqrt();
+
+                    // Flight time
+                    let flight_time = interceptor.current_flight_time;
+
+                    // Closure speed = interceptor velocity + target velocity (head-on)
+                    let closure_speed = interceptor.current_velocity_km_s + target_velocity;
+
+                    // Store detailed intercept result
+                    // Use actual interceptor position (where intercept occurred), not predicted target position
+                    self.intercept_results.push(InterceptResult {
+                        id: interceptor.id,
+                        time: sim_time,
+                        interceptor_type: interceptor_type_fn(interceptor.defense_type),
+                        defense_unit_name: unit_name,
+                        defense_type: interceptor.defense_type,
+                        target_name,
+                        intercept_position: interceptor.position,
+                        intercept_altitude_km: interceptor.altitude_km,
+                        launch_position: interceptor.launch_position,
+                        distance_from_platform_km: distance_3d,
+                        flight_time_sec: flight_time,
+                        closure_speed_km_s: closure_speed,
+                        target_velocity_km_s: target_velocity,
+                        interceptor_velocity_km_s: interceptor.current_velocity_km_s,
+                    });
+
+                    // Request intercept visual effect at actual intercept location
                     effects.push(EffectRequest {
-                        position: interceptor.target_position,
+                        position: interceptor.position,
                         effect_type: EffectType::Intercept,
                     });
                 }
@@ -228,7 +363,8 @@ impl EventTracker {
                 _ => {}
             }
 
-            self.intercept_states.insert(interceptor.id, interceptor.status);
+            self.intercept_states
+                .insert(interceptor.id, interceptor.status);
         }
 
         effects
