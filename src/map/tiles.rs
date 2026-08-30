@@ -69,9 +69,9 @@ struct TileLoadResult {
 /// Tile coordinate for EPSG:4326 (geographic projection) tiles
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct GibsTileCoord {
-    pub z: u32,    // Zoom level (0-8 for Blue Marble)
-    pub row: u32,  // Tile row
-    pub col: u32,  // Tile column
+    pub z: u32,   // Zoom level (0-8 for Blue Marble)
+    pub row: u32, // Tile row
+    pub col: u32, // Tile column
 }
 
 /// Request to load a GIBS tile
@@ -164,12 +164,16 @@ impl GibsTileCache {
 
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
                         let texture = ctx.load_texture(
-                            format!("gibs_tile_{}_{}_{}", result.coord.z, result.coord.row, result.coord.col),
+                            format!(
+                                "gibs_tile_{}_{}_{}",
+                                result.coord.z, result.coord.row, result.coord.col
+                            ),
                             color_image,
                             egui::TextureOptions::LINEAR,
                         );
 
-                        self.tiles.insert(result.coord, GibsTileStatus::Loaded(texture));
+                        self.tiles
+                            .insert(result.coord, GibsTileStatus::Loaded(texture));
                     } else {
                         self.tiles.insert(result.coord, GibsTileStatus::Failed);
                     }
@@ -214,7 +218,9 @@ impl GibsTileCache {
 
     /// Check if any tiles are currently loading
     pub fn has_loading_tiles(&self) -> bool {
-        self.tiles.values().any(|status| matches!(status, GibsTileStatus::Loading))
+        self.tiles
+            .values()
+            .any(|status| matches!(status, GibsTileStatus::Loading))
     }
 
     /// Convert lat/lon to NASA GIBS EPSG:4326 tile coordinates
@@ -332,7 +338,10 @@ impl TileCache {
         format!(
             "https://api.maptiler.com/maps/{}/{}/{}/{}@2x.png?key={}",
             self.style.style_id(),
-            coord.z, coord.x, coord.y, self.api_key
+            coord.z,
+            coord.x,
+            coord.y,
+            self.api_key
         )
     }
 
@@ -350,7 +359,10 @@ impl TileCache {
 
                         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
                         let texture = ctx.load_texture(
-                            format!("tile_{}_{}_{}", result.coord.z, result.coord.x, result.coord.y),
+                            format!(
+                                "tile_{}_{}_{}",
+                                result.coord.z, result.coord.x, result.coord.y
+                            ),
                             color_image,
                             egui::TextureOptions::LINEAR,
                         );
@@ -402,6 +414,8 @@ impl TileCache {
 
     /// Check if any tiles in the cache are currently loading
     pub fn has_loading_tiles(&self) -> bool {
-        self.tiles.values().any(|status| matches!(status, TileStatus::Loading))
+        self.tiles
+            .values()
+            .any(|status| matches!(status, TileStatus::Loading))
     }
 }

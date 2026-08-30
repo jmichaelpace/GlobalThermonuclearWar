@@ -4,9 +4,9 @@ use eframe::egui;
 /// Type of visual effect
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectType {
-    Impact,      // Missile impact explosion
-    Intercept,   // Successful intercept
-    Debris,      // Debris cloud from intercept
+    Impact,    // Missile impact explosion
+    Intercept, // Successful intercept
+    Debris,    // Debris cloud from intercept
 }
 
 /// A visual effect to render
@@ -21,11 +21,16 @@ pub struct VisualEffect {
 impl VisualEffect {
     pub fn new(position: GeoCoord, effect_type: EffectType, start_time: f64) -> Self {
         let duration = match effect_type {
-            EffectType::Impact => 3.0,     // 3 seconds
-            EffectType::Intercept => 2.0,  // 2 seconds
-            EffectType::Debris => 2.5,     // 2.5 seconds
+            EffectType::Impact => 3.0,    // 3 seconds
+            EffectType::Intercept => 2.0, // 2 seconds
+            EffectType::Debris => 2.5,    // 2.5 seconds
         };
-        Self { position, effect_type, start_time, duration }
+        Self {
+            position,
+            effect_type,
+            start_time,
+            duration,
+        }
     }
 
     pub fn progress(&self, current_time: f64) -> f64 {
@@ -57,12 +62,14 @@ impl EffectsManager {
 
     /// Spawn a new effect at the given position
     pub fn spawn(&mut self, position: GeoCoord, effect_type: EffectType, start_time: f64) {
-        self.effects.push(VisualEffect::new(position, effect_type, start_time));
+        self.effects
+            .push(VisualEffect::new(position, effect_type, start_time));
     }
 
     /// Update effects, removing finished ones
     pub fn update(&mut self, current_time: f64) {
-        self.effects.retain(|effect| !effect.is_finished(current_time));
+        self.effects
+            .retain(|effect| !effect.is_finished(current_time));
     }
 
     /// Clear all effects
@@ -156,7 +163,11 @@ impl EffectsManager {
                 alpha,
             );
 
-            painter.circle_filled(egui::pos2(debris_x, debris_y), size * (1.0 - debris_progress * 0.5), color);
+            painter.circle_filled(
+                egui::pos2(debris_x, debris_y),
+                size * (1.0 - debris_progress * 0.5),
+                color,
+            );
         }
 
         // Smoke cloud (fades in as explosion fades)
@@ -180,18 +191,27 @@ impl EffectsManager {
             painter.circle_stroke(
                 pos,
                 10.0,
-                egui::Stroke::new(2.5, egui::Color32::from_rgba_unmultiplied(100, 50, 30, marker_alpha)),
+                egui::Stroke::new(
+                    2.5,
+                    egui::Color32::from_rgba_unmultiplied(100, 50, 30, marker_alpha),
+                ),
             );
 
             // X mark
             let x_size = 7.0;
             let x_color = egui::Color32::from_rgba_unmultiplied(200, 50, 50, marker_alpha);
             painter.line_segment(
-                [egui::pos2(pos.x - x_size, pos.y - x_size), egui::pos2(pos.x + x_size, pos.y + x_size)],
+                [
+                    egui::pos2(pos.x - x_size, pos.y - x_size),
+                    egui::pos2(pos.x + x_size, pos.y + x_size),
+                ],
                 egui::Stroke::new(2.5, x_color),
             );
             painter.line_segment(
-                [egui::pos2(pos.x + x_size, pos.y - x_size), egui::pos2(pos.x - x_size, pos.y + x_size)],
+                [
+                    egui::pos2(pos.x + x_size, pos.y - x_size),
+                    egui::pos2(pos.x - x_size, pos.y + x_size),
+                ],
                 egui::Stroke::new(2.5, x_color),
             );
         }
@@ -259,7 +279,11 @@ impl EffectsManager {
                 alpha,
             );
 
-            painter.circle_filled(egui::pos2(debris_x, debris_y), size * (1.0 - debris_progress * 0.3), color);
+            painter.circle_filled(
+                egui::pos2(debris_x, debris_y),
+                size * (1.0 - debris_progress * 0.3),
+                color,
+            );
 
             // Small trail behind each debris piece
             if debris_progress < 0.7 {
@@ -268,7 +292,10 @@ impl EffectsManager {
                 let trail_y = debris_y - angle.sin() * 5.0 - 3.0;
                 painter.line_segment(
                     [egui::pos2(debris_x, debris_y), egui::pos2(trail_x, trail_y)],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(150, 255, 150, trail_alpha)),
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(150, 255, 150, trail_alpha),
+                    ),
                 );
             }
         }
@@ -322,12 +349,8 @@ impl EffectsManager {
 
             // Gray debris color
             let brightness = 80 + ((i as f32 * 1.2).sin().abs() * 100.0) as u8;
-            let color = egui::Color32::from_rgba_unmultiplied(
-                brightness,
-                brightness,
-                brightness,
-                alpha,
-            );
+            let color =
+                egui::Color32::from_rgba_unmultiplied(brightness, brightness, brightness, alpha);
 
             painter.circle_filled(
                 egui::pos2(debris_x, debris_y),

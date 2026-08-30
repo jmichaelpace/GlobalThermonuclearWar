@@ -1,8 +1,13 @@
-use crate::map::GeoCoord;
 use crate::simulation::SimulationEngine;
+use crate::types::GeoCoord;
 
+pub mod builder;
 pub mod loader;
-pub use loader::{ScenarioFile, load_all_scenarios};
+pub use builder::{
+    classify_missile_range, BuilderTool, DraftCategory, ScenarioDraft, AFFILIATIONS, DEFENSE_TYPES,
+    SATELLITE_SENSOR_TYPES,
+};
+pub use loader::{load_all_scenarios, ScenarioFile};
 
 /// A scenario definition loaded from a TOML file
 #[derive(Clone)]

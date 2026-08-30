@@ -58,7 +58,7 @@ pub enum GuidanceType {
 
 impl Default for GuidanceType {
     fn default() -> Self {
-        GuidanceType::Active  // Default to active for backward compatibility
+        GuidanceType::Active // Default to active for backward compatibility
     }
 }
 
@@ -70,6 +70,43 @@ pub struct EngagementConfig {
     /// Guidance type - determines if continuous illumination is required
     #[serde(default)]
     pub guidance_type: GuidanceType,
+    /// Mid-course guidance parameters
+    #[serde(default)]
+    pub midcourse_guidance: MidcourseGuidanceConfig,
+}
+
+/// Mid-course guidance configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MidcourseGuidanceConfig {
+    /// Total divert capability in km (fuel budget for course corrections)
+    pub divert_budget_km: f64,
+    /// How often guidance updates are sent (seconds)
+    pub update_interval_sec: f64,
+    /// Minimum correction threshold - don't waste divert on tiny adjustments (km)
+    pub min_correction_km: f64,
+    /// Whether mid-course updates are enabled
+    pub enabled: bool,
+    /// Proportional Navigation constant (N) for terminal guidance
+    /// Typical values: 3-5 for missiles. Higher = more aggressive pursuit.
+    /// Reference: Zarchan, "Tactical and Strategic Missile Guidance"
+    #[serde(default = "default_navigation_constant")]
+    pub navigation_constant: f64,
+}
+
+fn default_navigation_constant() -> f64 {
+    4.0 // N=4 is a common choice for hit-to-kill interceptors
+}
+
+impl Default for MidcourseGuidanceConfig {
+    fn default() -> Self {
+        Self {
+            divert_budget_km: 50.0,   // 50km total divert capability
+            update_interval_sec: 5.0, // Update every 5 seconds
+            min_correction_km: 1.0,   // Ignore corrections < 1km
+            enabled: true,
+            navigation_constant: default_navigation_constant(),
+        }
+    }
 }
 
 /// Kill envelope parameters
@@ -80,6 +117,161 @@ pub struct KillEnvelopeConfig {
     pub base_pk: f64,
 }
 
+/// Weights for Pk factor contributions using weighted log-odds calculation
+/// Higher weight = factor has more impact on final Pk
+/// Weights are relative - they get normalized during calculation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PkWeights {
+    // === Critical Factors (weight ~2.0) ===
+    /// Timing synchronization - must arrive at intercept point when missile does
+    pub timing_sync: f64,
+
+    /// Sensor track quality - fire control accuracy determines guidance precision
+    pub track_quality: f64,
+
+    /// Prediction error - how well intercept point matches actual missile position
+    pub prediction_error: f64,
+
+    // === Moderate Factors (weight ~1.0) ===
+    /// Countermeasures - decoys and jamming that confuse the seeker
+    pub countermeasures: f64,
+
+    /// Closure speed - combined approach velocity affects seeker acquisition time
+    pub closure_speed: f64,
+
+    /// Aspect angle - intercept geometry (head-on vs tail chase)
+    pub aspect_angle: f64,
+
+    // === Low Priority (weight ~0.3) ===
+    /// Energy state - remaining fuel/thruster capacity for terminal corrections
+    pub energy_state: f64,
+
+    // === Scaling ===
+    /// Overall penalty severity in logit space
+    /// Higher = factors have more impact on final Pk
+    pub severity_scale: f64,
+}
+
+impl Default for PkWeights {
+    fn default() -> Self {
+        Self {
+            // Critical factors
+            timing_sync: 2.0,
+            track_quality: 2.0,
+            prediction_error: 2.0,
+
+            // Moderate factors
+            countermeasures: 1.0,
+            closure_speed: 1.0,
+            aspect_angle: 0.8,
+
+            // Low priority
+            energy_state: 0.3,
+
+            // Scaling
+            severity_scale: 4.0,
+        }
+    }
+}
+
+impl PkWeights {
+    /// Load PkWeights from config/simulation.toml
+    /// Falls back to defaults if file doesn't exist or is invalid
+    pub fn load(config_dir: &Path) -> Self {
+        let config_path = config_dir.join("simulation.toml");
+
+        if !config_path.exists() {
+            return Self::default();
+        }
+
+        match fs::read_to_string(&config_path) {
+            Ok(contents) => {
+                // Parse the TOML file - look for [pk_weights] section
+                match toml::from_str::<SimulationConfig>(&contents) {
+                    Ok(config) => config.pk_weights.unwrap_or_default(),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to parse simulation.toml: {}, using defaults",
+                            e
+                        );
+                        Self::default()
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to read simulation.toml: {}, using defaults",
+                    e
+                );
+                Self::default()
+            }
+        }
+    }
+}
+
+/// Physics simulation settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhysicsConfig {
+    /// Number of physics sub-steps per frame for high-precision intercept calculations
+    /// Higher values = more precise but slower. 100 gives ~0.16ms precision at 60fps.
+    pub sub_steps: u32,
+
+    /// Minimum sub-steps to use when no interceptors are in terminal phase
+    /// Saves CPU when precision isn't needed
+    pub min_sub_steps: u32,
+
+    /// Distance threshold (km) for using full sub-steps
+    /// When interceptor is within this distance of target, use full sub_steps
+    pub precision_distance_km: f64,
+}
+
+impl Default for PhysicsConfig {
+    fn default() -> Self {
+        Self {
+            sub_steps: 100,              // 100 sub-steps = ~0.16ms precision at 60fps
+            min_sub_steps: 1,            // Normal precision when not needed
+            precision_distance_km: 50.0, // Use full precision within 50km of target
+        }
+    }
+}
+
+impl PhysicsConfig {
+    /// Load PhysicsConfig from config/simulation.toml
+    pub fn load(config_dir: &Path) -> Self {
+        let config_path = config_dir.join("simulation.toml");
+
+        if !config_path.exists() {
+            return Self::default();
+        }
+
+        match fs::read_to_string(&config_path) {
+            Ok(contents) => match toml::from_str::<SimulationConfig>(&contents) {
+                Ok(config) => config.physics.unwrap_or_default(),
+                Err(e) => {
+                    eprintln!("Warning: Failed to parse simulation.toml physics config: {}, using defaults", e);
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to read simulation.toml: {}, using defaults",
+                    e
+                );
+                Self::default()
+            }
+        }
+    }
+}
+
+/// Top-level simulation configuration (from simulation.toml)
+#[derive(Debug, Clone, Deserialize)]
+struct SimulationConfig {
+    /// Pk calculation weights
+    pk_weights: Option<PkWeights>,
+    /// Physics simulation settings
+    physics: Option<PhysicsConfig>,
+}
+
 // ============================================================================
 // Sensor Configuration
 // ============================================================================
@@ -88,13 +280,13 @@ pub struct KillEnvelopeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum RadarBand {
     #[serde(rename = "L")]
-    L,  // 1-2 GHz: Long range, low attenuation, lower resolution
+    L, // 1-2 GHz: Long range, low attenuation, lower resolution
     #[serde(rename = "S")]
-    S,  // 2-4 GHz: Good range, moderate attenuation, good resolution
+    S, // 2-4 GHz: Good range, moderate attenuation, good resolution
     #[serde(rename = "C")]
-    C,  // 4-8 GHz: Medium range, moderate-high attenuation
+    C, // 4-8 GHz: Medium range, moderate-high attenuation
     #[serde(rename = "X")]
-    X,  // 8-12 GHz: High resolution, higher attenuation, fire control
+    X, // 8-12 GHz: High resolution, higher attenuation, fire control
     #[serde(rename = "Ku")]
     Ku, // 12-18 GHz: Very high resolution, high attenuation
 }
@@ -103,29 +295,29 @@ impl RadarBand {
     /// Atmospheric attenuation coefficient (dB/km at sea level)
     pub fn attenuation_coefficient(&self) -> f64 {
         match self {
-            RadarBand::L => 0.005,   // Very low attenuation
-            RadarBand::S => 0.010,   // Low attenuation
-            RadarBand::C => 0.015,   // Moderate attenuation
-            RadarBand::X => 0.020,   // Higher attenuation
-            RadarBand::Ku => 0.030,  // High attenuation
+            RadarBand::L => 0.005,  // Very low attenuation
+            RadarBand::S => 0.010,  // Low attenuation
+            RadarBand::C => 0.015,  // Moderate attenuation
+            RadarBand::X => 0.020,  // Higher attenuation
+            RadarBand::Ku => 0.030, // High attenuation
         }
     }
 
     /// Resolution/quality multiplier (higher frequency = better resolution)
     pub fn quality_multiplier(&self) -> f64 {
         match self {
-            RadarBand::L => 0.85,    // Lower resolution
-            RadarBand::S => 0.92,    // Good resolution
-            RadarBand::C => 0.96,    // Better resolution
-            RadarBand::X => 1.00,    // Excellent resolution (baseline)
-            RadarBand::Ku => 1.05,   // Outstanding resolution
+            RadarBand::L => 0.85,  // Lower resolution
+            RadarBand::S => 0.92,  // Good resolution
+            RadarBand::C => 0.96,  // Better resolution
+            RadarBand::X => 1.00,  // Excellent resolution (baseline)
+            RadarBand::Ku => 1.05, // Outstanding resolution
         }
     }
 }
 
 impl Default for RadarBand {
     fn default() -> Self {
-        RadarBand::X  // Default to X-band (most common for fire control)
+        RadarBand::X // Default to X-band (most common for fire control)
     }
 }
 
@@ -165,8 +357,7 @@ impl MultiBandConfig {
 
     /// Check if this configuration uses multiple bands
     pub fn is_multi_band(&self) -> bool {
-        self.search_band != self.track_band ||
-        self.track_band != self.fire_control_band
+        self.search_band != self.track_band || self.track_band != self.fire_control_band
     }
 }
 
@@ -174,26 +365,26 @@ impl MultiBandConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RadarType {
     #[serde(rename = "mechanical")]
-    Mechanical,     // Traditional rotating antenna
+    Mechanical, // Traditional rotating antenna
     #[serde(rename = "phased_array")]
-    PhasedArray,    // Electronically steered beam
+    PhasedArray, // Electronically steered beam
 }
 
 /// Radar operating modes with different characteristics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RadarMode {
-    Search,       // Wide area surveillance
-    Track,        // Tracking specific targets
-    FireControl,  // Precision guidance for intercept
+    Search,      // Wide area surveillance
+    Track,       // Tracking specific targets
+    FireControl, // Precision guidance for intercept
 }
 
 impl RadarMode {
     /// Whether this mode uses slant range (true) or ground range (false)
     pub fn uses_slant_range(&self) -> bool {
         match self {
-            RadarMode::Search => false,       // Ground range for search
-            RadarMode::Track => true,         // Slant range for tracking
-            RadarMode::FireControl => true,   // Slant range for fire control
+            RadarMode::Search => false,     // Ground range for search
+            RadarMode::Track => true,       // Slant range for tracking
+            RadarMode::FireControl => true, // Slant range for fire control
         }
     }
 }
@@ -202,13 +393,13 @@ impl RadarMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SensorRole {
     #[serde(rename = "surveillance")]
-    Surveillance,   // Wide-area search, prefers Search mode
+    Surveillance, // Wide-area search, prefers Search mode
     #[serde(rename = "tracking")]
-    Tracking,       // Track maintenance, prefers Track mode
+    Tracking, // Track maintenance, prefers Track mode
     #[serde(rename = "fire_control")]
-    FireControl,    // Terminal guidance, prefers FireControl mode
+    FireControl, // Terminal guidance, prefers FireControl mode
     #[serde(rename = "multi_role")]
-    MultiRole,      // Can perform any role
+    MultiRole, // Can perform any role
 }
 
 impl Default for SensorRole {
@@ -266,26 +457,26 @@ pub struct SensorDetectionConfig {
 }
 
 fn default_track_multiplier() -> f64 {
-    2.0  // Default 2× base range in Track mode
+    2.0 // Default 2× base range in Track mode
 }
 
 fn default_fc_multiplier() -> f64 {
-    3.0  // Default 3× base range in FireControl mode
+    3.0 // Default 3× base range in FireControl mode
 }
 
 fn default_track_azimuth_multiplier() -> f64 {
-    1.0  // Default: same as search mode (backward compatible)
+    1.0 // Default: same as search mode (backward compatible)
 }
 
 fn default_fc_azimuth_multiplier() -> f64 {
-    1.0  // Default: same as search mode (backward compatible)
+    1.0 // Default: same as search mode (backward compatible)
 }
 
 impl SensorDetectionConfig {
     /// Get range multiplier for the given radar mode
     pub fn get_range_multiplier(&self, mode: RadarMode) -> f64 {
         match mode {
-            RadarMode::Search => 1.0,  // Base range
+            RadarMode::Search => 1.0, // Base range
             RadarMode::Track => self.track_range_multiplier,
             RadarMode::FireControl => self.fire_control_range_multiplier,
         }
@@ -303,13 +494,15 @@ impl SensorDetectionConfig {
 
     /// Check if this sensor supports multi-band operation
     pub fn is_multi_band(&self) -> bool {
-        self.multi_band.as_ref().map_or(false, |mb| mb.is_multi_band())
+        self.multi_band
+            .as_ref()
+            .map_or(false, |mb| mb.is_multi_band())
     }
 
     /// Get azimuth coverage multiplier for the given radar mode
     pub fn get_azimuth_multiplier(&self, mode: RadarMode) -> f64 {
         match mode {
-            RadarMode::Search => 1.0,  // Full base coverage
+            RadarMode::Search => 1.0, // Full base coverage
             RadarMode::Track => self.track_azimuth_multiplier,
             RadarMode::FireControl => self.fire_control_azimuth_multiplier,
         }
@@ -338,19 +531,19 @@ pub struct SensorTrackingConfig {
 }
 
 fn default_max_fc_tracks() -> u32 {
-    2  // Conservative default for fire control tracks
+    2 // Conservative default for fire control tracks
 }
 
 fn default_search_dwell_ms() -> f64 {
-    20.0  // 20ms per target in search mode
+    20.0 // 20ms per target in search mode
 }
 
 fn default_track_dwell_ms() -> f64 {
-    100.0  // 100ms per target in track mode
+    100.0 // 100ms per target in track mode
 }
 
 fn default_fc_dwell_ms() -> f64 {
-    500.0  // 500ms per target in fire control mode
+    500.0 // 500ms per target in fire control mode
 }
 
 impl SensorTrackingConfig {
@@ -420,14 +613,15 @@ impl SensorConfigRegistry {
             }
         }
 
-        Ok(Self { configs, default_config })
+        Ok(Self {
+            configs,
+            default_config,
+        })
     }
 
     fn load_config_file(path: &Path) -> Result<SensorConfig, ConfigError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        toml::from_str(&contents)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))
+        let contents = fs::read_to_string(path).map_err(|e| ConfigError::IoError(e.to_string()))?;
+        toml::from_str(&contents).map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     fn normalize_name(name: &str) -> String {
@@ -437,7 +631,9 @@ impl SensorConfigRegistry {
     /// Get configuration for a sensor by name
     pub fn get_by_name(&self, sensor_name: &str) -> &SensorConfig {
         let normalized = Self::normalize_name(sensor_name);
-        self.configs.get(&normalized).unwrap_or(&self.default_config)
+        self.configs
+            .get(&normalized)
+            .unwrap_or(&self.default_config)
     }
 
     fn hardcoded_default() -> SensorConfig {
@@ -531,7 +727,7 @@ impl LauncherConfig {
 }
 
 fn default_max_salvo() -> u32 {
-    2  // Conservative default
+    2 // Conservative default
 }
 
 /// Complete platform/launcher configuration
@@ -637,7 +833,9 @@ impl PlatformConfigRegistry {
 
     pub fn get_by_name(&self, platform_name: &str) -> &PlatformConfig {
         let normalized = Self::normalize_name(platform_name);
-        self.configs.get(&normalized).unwrap_or(&self.default_config)
+        self.configs
+            .get(&normalized)
+            .unwrap_or(&self.default_config)
     }
 
     pub fn get_by_defense_type(&self, defense_type: DefenseType) -> &PlatformConfig {
@@ -708,14 +906,15 @@ impl InterceptorConfigRegistry {
             }
         }
 
-        Ok(Self { configs, default_config })
+        Ok(Self {
+            configs,
+            default_config,
+        })
     }
 
     fn load_config_file(path: &Path) -> Result<InterceptorConfig, ConfigError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        toml::from_str(&contents)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))
+        let contents = fs::read_to_string(path).map_err(|e| ConfigError::IoError(e.to_string()))?;
+        toml::from_str(&contents).map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     fn normalize_name(name: &str) -> String {
@@ -725,7 +924,9 @@ impl InterceptorConfigRegistry {
     /// Get configuration for an interceptor by name
     pub fn get_by_name(&self, interceptor_name: &str) -> &InterceptorConfig {
         let normalized = Self::normalize_name(interceptor_name);
-        self.configs.get(&normalized).unwrap_or(&self.default_config)
+        self.configs
+            .get(&normalized)
+            .unwrap_or(&self.default_config)
     }
 
     fn hardcoded_default() -> InterceptorConfig {
@@ -752,6 +953,7 @@ impl InterceptorConfigRegistry {
                 hit_probability: 0.70,
                 terminal_blend_factor: 0.30,
                 guidance_type: GuidanceType::Active,
+                midcourse_guidance: MidcourseGuidanceConfig::default(),
             },
             kill_envelope: KillEnvelopeConfig {
                 seeker_range_km: 30.0,
@@ -776,10 +978,10 @@ impl InterceptorConfigRegistry {
 /// Orbit type for satellites
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OrbitType {
-    GEO,  // Geosynchronous
-    HEO,  // Highly Elliptical Orbit
-    LEO,  // Low Earth Orbit
-    MEO,  // Medium Earth Orbit
+    GEO, // Geosynchronous
+    HEO, // Highly Elliptical Orbit
+    LEO, // Low Earth Orbit
+    MEO, // Medium Earth Orbit
 }
 
 /// Satellite orbit parameters
@@ -867,14 +1069,15 @@ impl SatelliteConfigRegistry {
             }
         }
 
-        Ok(Self { configs, default_config })
+        Ok(Self {
+            configs,
+            default_config,
+        })
     }
 
     fn load_config_file(path: &Path) -> Result<SatelliteConfig, ConfigError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        toml::from_str(&contents)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))
+        let contents = fs::read_to_string(path).map_err(|e| ConfigError::IoError(e.to_string()))?;
+        toml::from_str(&contents).map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     fn normalize_name(name: &str) -> String {
@@ -884,7 +1087,9 @@ impl SatelliteConfigRegistry {
     /// Get configuration for a satellite by name
     pub fn get_by_name(&self, satellite_name: &str) -> &SatelliteConfig {
         let normalized = Self::normalize_name(satellite_name);
-        self.configs.get(&normalized).unwrap_or(&self.default_config)
+        self.configs
+            .get(&normalized)
+            .unwrap_or(&self.default_config)
     }
 
     fn hardcoded_default() -> SatelliteConfig {
@@ -927,11 +1132,11 @@ impl SatelliteConfigRegistry {
 /// Type of ballistic missile
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MissileType {
-    ICBM,   // Intercontinental Ballistic Missile (>5,500 km)
-    SLBM,   // Submarine-Launched Ballistic Missile
-    IRBM,   // Intermediate-Range Ballistic Missile (3,000-5,500 km)
-    MRBM,   // Medium-Range Ballistic Missile (1,000-3,000 km)
-    SRBM,   // Short-Range Ballistic Missile (<1,000 km)
+    ICBM, // Intercontinental Ballistic Missile (>5,500 km)
+    SLBM, // Submarine-Launched Ballistic Missile
+    IRBM, // Intermediate-Range Ballistic Missile (3,000-5,500 km)
+    MRBM, // Medium-Range Ballistic Missile (1,000-3,000 km)
+    SRBM, // Short-Range Ballistic Missile (<1,000 km)
 }
 
 impl MissileType {
@@ -1045,7 +1250,10 @@ impl MissileConfigRegistry {
             match Self::load_config_file(&default_path) {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    eprintln!("Warning: Failed to load default.toml: {}, using hardcoded defaults", e);
+                    eprintln!(
+                        "Warning: Failed to load default.toml: {}, using hardcoded defaults",
+                        e
+                    );
                     Self::hardcoded_default()
                 }
             }
@@ -1057,7 +1265,10 @@ impl MissileConfigRegistry {
         // Recursively load all .toml files from missiles directory and subdirectories
         Self::load_configs_recursive(&missiles_dir, &mut configs);
 
-        Ok(Self { configs, default_config })
+        Ok(Self {
+            configs,
+            default_config,
+        })
     }
 
     /// Recursively load config files from a directory and its subdirectories
@@ -1091,31 +1302,27 @@ impl MissileConfigRegistry {
 
     /// Load a single config file
     fn load_config_file(path: &Path) -> Result<MissileConfig, ConfigError> {
-        let contents = fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
+        let contents = fs::read_to_string(path).map_err(|e| ConfigError::IoError(e.to_string()))?;
 
-        toml::from_str(&contents)
-            .map_err(|e| ConfigError::ParseError(e.to_string()))
+        toml::from_str(&contents).map_err(|e| ConfigError::ParseError(e.to_string()))
     }
 
     /// Normalize a missile name for lookup (lowercase, replace spaces/hyphens with underscores)
     fn normalize_name(name: &str) -> String {
-        name.to_lowercase()
-            .replace([' ', '-'], "_")
+        name.to_lowercase().replace([' ', '-'], "_")
     }
 
     /// Get configuration for a missile by name
     /// Matches missile names like "Shahab-3 #1" to config "Shahab-3"
     pub fn get_by_name(&self, missile_name: &str) -> &MissileConfig {
         // Strip any numbering suffix like " #1", " #2", etc.
-        let base_name = missile_name
-            .split(" #")
-            .next()
-            .unwrap_or(missile_name);
+        let base_name = missile_name.split(" #").next().unwrap_or(missile_name);
 
         let normalized = Self::normalize_name(base_name);
 
-        self.configs.get(&normalized).unwrap_or(&self.default_config)
+        self.configs
+            .get(&normalized)
+            .unwrap_or(&self.default_config)
     }
 
     /// Get configuration for a missile type (returns first matching config or default)
@@ -1135,7 +1342,8 @@ impl MissileConfigRegistry {
     /// Calculate flight time for a given range using a missile's config
     pub fn calculate_flight_time_by_name(&self, missile_name: &str, range_km: f64) -> f64 {
         let config = self.get_by_name(missile_name);
-        config.trajectory.flight_time_base_sec + range_km * config.trajectory.flight_time_range_factor
+        config.trajectory.flight_time_base_sec
+            + range_km * config.trajectory.flight_time_range_factor
     }
 
     /// Calculate apogee for a given range using the missile type's config
@@ -1147,7 +1355,8 @@ impl MissileConfigRegistry {
     /// Calculate flight time for a given range using the missile type's config
     pub fn calculate_flight_time(&self, missile_type: MissileType, range_km: f64) -> f64 {
         let config = self.get(missile_type);
-        config.trajectory.flight_time_base_sec + range_km * config.trajectory.flight_time_range_factor
+        config.trajectory.flight_time_base_sec
+            + range_km * config.trajectory.flight_time_range_factor
     }
 
     /// Hardcoded default configuration

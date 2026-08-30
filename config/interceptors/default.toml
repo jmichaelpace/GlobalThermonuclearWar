@@ -34,11 +34,22 @@ hit_probability = 0.70
 # Weight factor for terminal homing accuracy (0.0-1.0, higher = better terminal guidance)
 terminal_blend_factor = 0.30
 
+# Mid-course guidance parameters
+[engagement.midcourse_guidance]
+# Total divert capability (km) - fuel budget for course corrections
+divert_budget_km = 50.0
+# How often guidance updates are sent from ground/ship radar (seconds)
+update_interval_sec = 5.0
+# Minimum correction threshold - don't waste divert on tiny adjustments (km)
+min_correction_km = 1.0
+# Whether mid-course guidance is enabled
+enabled = true
+
 # Kill vehicle parameters
 [kill_envelope]
 # Range at which seeker can acquire and track target (km)
 seeker_range_km = 30.0
 # Effective radius for kinetic kill (km) - how close interceptor must pass
-kill_radius_km = 5.0
+kill_radius_km = 0.1  # Default hit-to-kill assumption (~100m)
 # Base probability of kill given successful intercept (0.0-1.0)
 base_pk = 0.70

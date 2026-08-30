@@ -15,9 +15,7 @@ pub trait MapProjection {
     /// Returns all visible positions for a coordinate (typically 1, but can be 2-3 for wrap-around).
     /// The default implementation returns a single position if visible.
     fn geo_to_screen_wrapped(&self, coord: GeoCoord, screen_rect: Rect) -> Vec<Pos2> {
-        self.geo_to_screen(coord, screen_rect)
-            .into_iter()
-            .collect()
+        self.geo_to_screen(coord, screen_rect).into_iter().collect()
     }
 
     /// Get the visible bounds of this projection in geographic coordinates.

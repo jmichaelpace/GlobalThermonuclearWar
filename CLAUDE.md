@@ -93,21 +93,17 @@ src/
 - Prefer crates from the egui ecosystem when possible
 - Check crates.io for compatibility before adding dependencies
 
-## Simulation Accuracy
+## Realism Requirements
+- Use real-world physics constants (e.g., standard gravity 9.80665 m/s²)
+- Prefer established defense/aerospace models (e.g., Kepler, Lambert, Kalman filter)
+- Never simplify physics for performance unless explicitly asked
+- Cite the real-world basis for any model or formula used in comments
 
 ### Real-World Fidelity
-This simulation models real-world missile defense systems and must maintain accuracy:
-
+This simulation models real-world missile defense systems and must maintain accuracy
 - **Preserve equipment specifications**: Detection ranges, engagement ranges, interceptor counts, and sensor capabilities must match real-world published data.  Never modify configuration ranges or specifications in the /config files without asking first
 - **Config files are authoritative**: Equipment specs in `config/` TOML files represent researched real-world values.
 - **Defense system capabilities**: See configuration files in `config/platform/` for authoritative engagement ranges, altitude envelopes, and interceptor specifications for each defense system (Patriot, THAAD, Aegis, GBI, Iron Dome, Arrow 3, David's Sling, S-400)
-
-
-### Physics and Detection
-- Radar detection follows inverse-square law (R⁴ for radar equation)
-- RCS (Radar Cross Section) values in dBsm affect detection probability
-- Atmospheric attenuation increases with range and decreases with altitude
-- Ballistic trajectories use realistic apogee calculations based on range
 
 ### When Modifying Simulation Code
 1. Do not modify configuration items (Equipment specs) that have a TOML comment on the same line after the config setting
@@ -116,3 +112,16 @@ This simulation models real-world missile defense systems and must maintain accu
 4. Ensure interceptors launch when threats are in engagement envelope
 5. Run the simulation with each scenario to verify expected behaviors
 6. Do not modify existing equipment files without asking first
+
+## Domain References
+When working on specific subsystems, read these files first:
+- Radar, detection and/or tracking: @docs/radar-detection-tracking.md
+- Intercept kinematics and/or platform firing logic: @docs/platform-intercept-geometry.md
+- physics modeling: @docs/physics.md
+
+## Context Compaction Behavior
+The audit plan at `docs/audit-plan.md` tracks implementation progress against domain requirements.
+
+**Before context compaction**: Update the plan file to mark completed items and note current progress.
+
+**After context compaction**: Read `docs/audit-plan.md` to restore context on what has been done and what remains.

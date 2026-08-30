@@ -1,6 +1,4 @@
-use crate::simulation::{
-    Affiliation, DefenseType, MissileStatus, SensorType, UnitStatus,
-};
+use crate::simulation::{Affiliation, DefenseType, MissileStatus, SensorType, UnitStatus};
 use eframe::egui::{self, Color32, Pos2, Stroke};
 
 /// APP-6 inspired military symbology colors
@@ -11,16 +9,16 @@ impl SymbolColors {
     pub fn for_affiliation(affiliation: Affiliation) -> (Color32, Color32) {
         match affiliation {
             Affiliation::Friendly => (
-                Color32::from_rgb(0, 120, 215),    // Blue frame
-                Color32::from_rgb(128, 179, 255),  // Light blue fill
+                Color32::from_rgb(0, 120, 215),   // Blue frame
+                Color32::from_rgb(128, 179, 255), // Light blue fill
             ),
             Affiliation::Hostile => (
-                Color32::from_rgb(200, 0, 0),      // Red frame
-                Color32::from_rgb(255, 128, 128),  // Light red fill
+                Color32::from_rgb(200, 0, 0),     // Red frame
+                Color32::from_rgb(255, 128, 128), // Light red fill
             ),
             Affiliation::Neutral => (
-                Color32::from_rgb(0, 160, 0),      // Green frame
-                Color32::from_rgb(128, 255, 128),  // Light green fill
+                Color32::from_rgb(0, 160, 0),     // Green frame
+                Color32::from_rgb(128, 255, 128), // Light green fill
             ),
         }
     }
@@ -381,10 +379,7 @@ impl MilitarySymbols {
             Pos2::new(pos.x + size * 0.5, pos.y + size * 0.3),
         ];
 
-        painter.add(egui::Shape::line(
-            chevron_points,
-            Stroke::new(2.5, color),
-        ));
+        painter.add(egui::Shape::line(chevron_points, Stroke::new(2.5, color)));
 
         // Add dots or lines based on defense type capability
         match defense_type {
@@ -395,10 +390,7 @@ impl MilitarySymbols {
                     Pos2::new(pos.x, pos.y - size * 0.1),
                     Pos2::new(pos.x + size * 0.35, pos.y + size * 0.5),
                 ];
-                painter.add(egui::Shape::line(
-                    chevron2_points,
-                    Stroke::new(2.0, color),
-                ));
+                painter.add(egui::Shape::line(chevron2_points, Stroke::new(2.0, color)));
             }
             DefenseType::Aegis => {
                 // Naval: add wave underneath
@@ -412,11 +404,7 @@ impl MilitarySymbols {
             }
             DefenseType::DavidsSling => {
                 // Mid-tier: chevron with dot (sling reference)
-                painter.circle_filled(
-                    Pos2::new(pos.x, pos.y + size * 0.5),
-                    size * 0.15,
-                    color,
-                );
+                painter.circle_filled(Pos2::new(pos.x, pos.y + size * 0.5), size * 0.15, color);
             }
             DefenseType::Patriot | DefenseType::S400 | DefenseType::IronDome => {
                 // Standard air defense: single chevron (already drawn)
@@ -438,10 +426,7 @@ impl MilitarySymbols {
         let sin_h = heading.sin();
 
         // Points for missile shape (nose, body sides, tail fins)
-        let nose = Pos2::new(
-            pos.x + cos_h * size,
-            pos.y + sin_h * size,
-        );
+        let nose = Pos2::new(pos.x + cos_h * size, pos.y + sin_h * size);
         let left_body = Pos2::new(
             pos.x - sin_h * size * 0.3 - cos_h * size * 0.3,
             pos.y + cos_h * size * 0.3 - sin_h * size * 0.3,
@@ -450,10 +435,7 @@ impl MilitarySymbols {
             pos.x + sin_h * size * 0.3 - cos_h * size * 0.3,
             pos.y - cos_h * size * 0.3 - sin_h * size * 0.3,
         );
-        let tail_center = Pos2::new(
-            pos.x - cos_h * size * 0.6,
-            pos.y - sin_h * size * 0.6,
-        );
+        let tail_center = Pos2::new(pos.x - cos_h * size * 0.6, pos.y - sin_h * size * 0.6);
         let left_fin = Pos2::new(
             pos.x - sin_h * size * 0.5 - cos_h * size * 0.8,
             pos.y + cos_h * size * 0.5 - sin_h * size * 0.8,
@@ -487,14 +469,8 @@ impl MilitarySymbols {
         let sin_h = heading.sin();
 
         // Flame behind missile
-        let flame_base = Pos2::new(
-            pos.x - cos_h * size * 0.8,
-            pos.y - sin_h * size * 0.8,
-        );
-        let flame_tip = Pos2::new(
-            pos.x - cos_h * size * 1.8,
-            pos.y - sin_h * size * 1.8,
-        );
+        let flame_base = Pos2::new(pos.x - cos_h * size * 0.8, pos.y - sin_h * size * 0.8);
+        let flame_tip = Pos2::new(pos.x - cos_h * size * 1.8, pos.y - sin_h * size * 1.8);
         let flame_left = Pos2::new(
             pos.x - sin_h * size * 0.25 - cos_h * size * 0.9,
             pos.y + cos_h * size * 0.25 - sin_h * size * 0.9,
@@ -511,16 +487,19 @@ impl MilitarySymbols {
         ));
 
         // Inner flame
-        let inner_tip = Pos2::new(
-            pos.x - cos_h * size * 1.4,
-            pos.y - sin_h * size * 1.4,
-        );
+        let inner_tip = Pos2::new(pos.x - cos_h * size * 1.4, pos.y - sin_h * size * 1.4);
         painter.add(egui::Shape::convex_polygon(
             vec![
                 flame_base,
-                Pos2::new(flame_left.x * 0.5 + flame_base.x * 0.5, flame_left.y * 0.5 + flame_base.y * 0.5),
+                Pos2::new(
+                    flame_left.x * 0.5 + flame_base.x * 0.5,
+                    flame_left.y * 0.5 + flame_base.y * 0.5,
+                ),
                 inner_tip,
-                Pos2::new(flame_right.x * 0.5 + flame_base.x * 0.5, flame_right.y * 0.5 + flame_base.y * 0.5),
+                Pos2::new(
+                    flame_right.x * 0.5 + flame_base.x * 0.5,
+                    flame_right.y * 0.5 + flame_base.y * 0.5,
+                ),
             ],
             Color32::from_rgb(255, 255, 100),
             Stroke::NONE,
@@ -530,7 +509,11 @@ impl MilitarySymbols {
     /// Draw explosion effect
     fn draw_explosion(painter: &egui::Painter, pos: Pos2, size: f32) {
         // Outer glow
-        painter.circle_filled(pos, size * 2.0, Color32::from_rgba_unmultiplied(255, 100, 0, 50));
+        painter.circle_filled(
+            pos,
+            size * 2.0,
+            Color32::from_rgba_unmultiplied(255, 100, 0, 50),
+        );
 
         // Explosion rays
         for i in 0..8 {
@@ -587,11 +570,7 @@ impl MilitarySymbols {
 
         if let Some(color) = SymbolColors::for_status_indicator(engaged, tracking) {
             // Subtle ring effect
-            painter.circle_stroke(
-                pos,
-                size * 1.4,
-                Stroke::new(1.0, color),
-            );
+            painter.circle_stroke(pos, size * 1.4, Stroke::new(1.0, color));
 
             if engaged {
                 // Second ring for engaged (subtle)
@@ -628,21 +607,33 @@ impl MilitarySymbols {
 
         // Horizontal
         painter.line_segment(
-            [Pos2::new(pos.x - outer, pos.y), Pos2::new(pos.x - inner, pos.y)],
+            [
+                Pos2::new(pos.x - outer, pos.y),
+                Pos2::new(pos.x - inner, pos.y),
+            ],
             Stroke::new(2.0, color),
         );
         painter.line_segment(
-            [Pos2::new(pos.x + inner, pos.y), Pos2::new(pos.x + outer, pos.y)],
+            [
+                Pos2::new(pos.x + inner, pos.y),
+                Pos2::new(pos.x + outer, pos.y),
+            ],
             Stroke::new(2.0, color),
         );
 
         // Vertical
         painter.line_segment(
-            [Pos2::new(pos.x, pos.y - outer), Pos2::new(pos.x, pos.y - inner)],
+            [
+                Pos2::new(pos.x, pos.y - outer),
+                Pos2::new(pos.x, pos.y - inner),
+            ],
             Stroke::new(2.0, color),
         );
         painter.line_segment(
-            [Pos2::new(pos.x, pos.y + inner), Pos2::new(pos.x, pos.y + outer)],
+            [
+                Pos2::new(pos.x, pos.y + inner),
+                Pos2::new(pos.x, pos.y + outer),
+            ],
             Stroke::new(2.0, color),
         );
 

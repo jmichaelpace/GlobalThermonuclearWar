@@ -38,11 +38,18 @@ terminal_blend_factor = 0.60
 # Guidance type: active (onboard radar), semi_active (requires illumination), or command
 guidance_type = "active"  # PAC-3 MSE uses active radar homing
 
+# Mid-course guidance - PAC-3 MSE has 180 attitude control motors for high agility
+[engagement.midcourse_guidance]
+divert_budget_km = 25.0  # Limited budget due to short range/flight time
+update_interval_sec = 1.0  # Very fast updates for terminal defense
+min_correction_km = 0.2
+enabled = true
+
 # Kill vehicle parameters
 [kill_envelope]
 # Range at which seeker can acquire and track target (km)
 seeker_range_km = 30.0
 # Effective radius for kinetic kill (km) - how close interceptor must pass
-kill_radius_km = 2.0
+kill_radius_km = 0.05  # Hit-to-kill: smaller endo-atmospheric interceptor (~50m)
 # Base probability of kill given successful intercept (0.0-1.0)
 base_pk = 0.90

@@ -9,7 +9,7 @@
 //! - Nonlinear measurement model for radar (range/azimuth/elevation)
 //! - Measurement Jacobian computed at each step
 
-use crate::map::GeoCoord;
+use crate::types::GeoCoord;
 
 /// Earth radius in km
 const EARTH_RADIUS_KM: f64 = 6371.0;
@@ -90,12 +90,12 @@ impl EKFState {
         let vel_var = 1.0; // 1 km/s std dev
 
         let mut P = [0.0; 36];
-        P[0] = lat_var;      // var(lat)
-        P[7] = lon_var;      // var(lon)
+        P[0] = lat_var; // var(lat)
+        P[7] = lon_var; // var(lon)
         P[14] = pos_var_vert; // var(alt)
-        P[21] = vel_var;     // var(v_north)
-        P[28] = vel_var;     // var(v_east)
-        P[35] = vel_var;     // var(v_up)
+        P[21] = vel_var; // var(v_north)
+        P[28] = vel_var; // var(v_east)
+        P[35] = vel_var; // var(v_up)
 
         Self {
             x,
@@ -117,7 +117,7 @@ impl EKFState {
 
         // Conservative initial covariance
         let mut P = [0.0; 36];
-        P[0] = (2.0 / EARTH_RADIUS_KM).powi(2);  // ~2km position uncertainty
+        P[0] = (2.0 / EARTH_RADIUS_KM).powi(2); // ~2km position uncertainty
         P[7] = (2.0 / EARTH_RADIUS_KM).powi(2);
         P[14] = 1.0; // 1km altitude uncertainty
         P[21] = 1.0; // 1 km/s velocity uncertainty
@@ -130,15 +130,14 @@ impl EKFState {
     /// Unpack state vector into named components
     #[inline]
     pub fn unpack(&self) -> (f64, f64, f64, f64, f64, f64) {
-        (self.x[0], self.x[1], self.x[2], self.x[3], self.x[4], self.x[5])
+        (
+            self.x[0], self.x[1], self.x[2], self.x[3], self.x[4], self.x[5],
+        )
     }
 
     /// Get position in GeoCoord format
     pub fn get_position(&self) -> (GeoCoord, f64) {
-        let pos = GeoCoord::new(
-            self.x[0].to_degrees(),
-            self.x[1].to_degrees(),
-        );
+        let pos = GeoCoord::new(self.x[0].to_degrees(), self.x[1].to_degrees());
         (pos, self.x[2])
     }
 
@@ -164,6 +163,89 @@ impl EKFState {
         let alt_var_km = self.P[14];
 
         ((lat_var_km + lon_var_km + alt_var_km) / 3.0).sqrt()
+    }
+
+    /// Initialize velocity state from two position measurements
+    /// This provides a much better initial velocity estimate than zero,
+    /// especially important for crossing (east-west) trajectories.
+    ///
+    /// Should be called after the second measurement to bootstrap velocity.
+    pub fn initialize_velocity_from_positions(
+        &mut self,
+        older_pos: GeoCoord,
+        older_alt: f64,
+        older_time: f64,
+        newer_pos: GeoCoord,
+        newer_alt: f64,
+        newer_time: f64,
+    ) {
+        let dt = newer_time - older_time;
+        if dt < 0.1 {
+            return; // Need sufficient time gap
+        }
+
+        // Compute velocity components from position change
+        let lat1 = older_pos.lat.to_radians();
+        let lat2 = newer_pos.lat.to_radians();
+        let lon1 = older_pos.lon.to_radians();
+        let lon2 = newer_pos.lon.to_radians();
+
+        // Average radius at mid-altitude
+        let avg_alt = (older_alt + newer_alt) / 2.0;
+        let r = EARTH_RADIUS_KM + avg_alt;
+
+        // Velocity in north direction (from latitude change)
+        let v_north = (lat2 - lat1) * r / dt;
+
+        // Velocity in east direction (from longitude change, accounting for latitude)
+        let avg_lat = (lat1 + lat2) / 2.0;
+        let v_east = (lon2 - lon1) * r * avg_lat.cos() / dt;
+
+        // Vertical velocity from altitude change
+        let v_up = (newer_alt - older_alt) / dt;
+
+        // Sanity check: ballistic missiles typically < 8 km/s horizontal
+        let ground_speed = (v_north.powi(2) + v_east.powi(2)).sqrt();
+        if ground_speed > 10.0 {
+            return; // Unrealistic velocity, likely measurement error
+        }
+
+        // Set velocity state
+        self.x[3] = v_north;
+        self.x[4] = v_east;
+        self.x[5] = v_up;
+
+        // Reduce velocity uncertainty since we now have an estimate
+        // Still keep some uncertainty for filter to refine
+        let vel_var = 0.25; // 0.5 km/s std dev (reduced from initial 1.0)
+        self.P[21] = vel_var;
+        self.P[28] = vel_var;
+        self.P[35] = vel_var;
+    }
+
+    /// Predict state at multiple future times (for trajectory visualization)
+    /// Returns Vec of (time_offset, position, altitude, uncertainty)
+    ///
+    /// This is useful for rendering predicted trajectories based on EKF state.
+    /// Uses proper ballistic dynamics with gravity.
+    pub fn predict_trajectory(
+        &self,
+        time_step: f64,
+        num_steps: usize,
+    ) -> Vec<(f64, GeoCoord, f64, f64)> {
+        let mut results = Vec::with_capacity(num_steps);
+        let mut state = self.clone();
+
+        for i in 0..num_steps {
+            let t = (i as f64) * time_step;
+            if i > 0 {
+                state.predict(time_step);
+            }
+            let (pos, alt) = state.get_position();
+            let uncertainty = state.get_position_uncertainty();
+            results.push((t, pos, alt, uncertainty));
+        }
+        results
     }
 
     /// Nonlinear state transition function f(x, dt)
@@ -248,12 +330,12 @@ impl EKFState {
         // Velocity process noise (small - no thrust after boost)
         let q_vel = 0.001 * dt; // (km/s)²
 
-        Q[0] = q_pos / EARTH_RADIUS_KM.powi(2);  // lat variance
-        Q[7] = q_pos / EARTH_RADIUS_KM.powi(2);  // lon variance
-        Q[14] = q_pos;                           // alt variance
-        Q[21] = q_vel;                           // v_n variance
-        Q[28] = q_vel;                           // v_e variance
-        Q[35] = q_vel;                           // v_u variance
+        Q[0] = q_pos / EARTH_RADIUS_KM.powi(2); // lat variance
+        Q[7] = q_pos / EARTH_RADIUS_KM.powi(2); // lon variance
+        Q[14] = q_pos; // alt variance
+        Q[21] = q_vel; // v_n variance
+        Q[28] = q_vel; // v_e variance
+        Q[35] = q_vel; // v_u variance
 
         Q
     }
@@ -311,6 +393,12 @@ impl EKFState {
         let elevation = u.atan2(horizontal_range);
 
         [range, azimuth, elevation]
+    }
+
+    /// Public wrapper for measurement prediction
+    /// Returns predicted [range_km, azimuth_rad, elevation_rad] for a sensor
+    pub fn predict_measurement(&self, sensor_pos: GeoCoord, sensor_alt: f64) -> [f64; 3] {
+        self.h(sensor_pos, sensor_alt)
     }
 
     /// Measurement Jacobian H = dh/dx evaluated at current state
@@ -584,9 +672,8 @@ fn matrix_add_3x3(a: &[f64; 9], b: &[f64; 9]) -> [f64; 9] {
 
 /// Invert 3x3 matrix using cofactor method
 fn matrix_inv_3x3(m: &[f64; 9]) -> [f64; 9] {
-    let det = m[0] * (m[4] * m[8] - m[5] * m[7])
-            - m[1] * (m[3] * m[8] - m[5] * m[6])
-            + m[2] * (m[3] * m[7] - m[4] * m[6]);
+    let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+        + m[2] * (m[3] * m[7] - m[4] * m[6]);
 
     if det.abs() < 1e-10 {
         // Singular matrix, return identity

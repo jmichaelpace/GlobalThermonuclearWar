@@ -5,6 +5,8 @@ mod rendering;
 mod scenario;
 mod simulation;
 mod tracking;
+mod types;
+mod ui;
 mod view;
 
 use app::App;

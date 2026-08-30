@@ -1,10 +1,10 @@
-use crate::map::GeoCoord;
 use crate::simulation::{Affiliation, DefenseType, SensorType, SimulationEngine};
-use serde::Deserialize;
+use crate::types::GeoCoord;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioFile {
     pub metadata: ScenarioMetadata,
     #[serde(default)]
@@ -17,7 +17,7 @@ pub struct ScenarioFile {
     pub missiles: Vec<MissileConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioMetadata {
     pub id: String,
     pub name: String,
@@ -28,7 +28,7 @@ pub struct ScenarioMetadata {
     pub zoom: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefenseUnitConfig {
     pub name: String,
     pub affiliation: String,
@@ -39,7 +39,7 @@ pub struct DefenseUnitConfig {
     pub interceptors: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadarStationConfig {
     pub name: String,
     pub affiliation: String,
@@ -47,12 +47,14 @@ pub struct RadarStationConfig {
     pub lon: f64,
     pub range_km: f64,
     /// Sensor configuration name (references config/sensors/*.toml filename without extension)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sensor_config: Option<String>,
     /// Azimuth direction the radar faces (degrees, 0=North, 90=East)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub facing_deg: Option<f64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SatelliteConfig {
     pub name: String,
     pub affiliation: String,
@@ -62,7 +64,7 @@ pub struct SatelliteConfig {
     pub sensor_type: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MissileConfig {
     pub name: String,
     pub affiliation: String,

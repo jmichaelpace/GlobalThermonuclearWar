@@ -1,0 +1,87 @@
+# Simulation Configuration
+# This file controls simulation-wide parameters
+
+# =============================================================================
+# Physics Sub-stepping
+# =============================================================================
+#
+# Hit-to-kill interceptors require very precise timing. At 4+ km/s closure speed,
+# even a single frame (16ms at 60fps) means ~67 meters of travel. Sub-stepping
+# runs multiple physics updates per frame for precision intercept calculations.
+
+[physics]
+
+# Number of physics sub-steps per frame when interceptors are close to targets
+# Higher = more precise but uses more CPU
+# 100 sub-steps at 60fps = ~0.16ms time resolution (~0.7m at 4 km/s)
+# 200 sub-steps at 60fps = ~0.08ms time resolution (~0.35m at 4 km/s)
+sub_steps = 100
+
+# Minimum sub-steps when no interceptors need precision
+# Saves CPU when nothing is close to intercept
+min_sub_steps = 1
+
+# Distance threshold (km) for activating full sub-stepping
+# When any interceptor is within this distance of its target, use full sub_steps
+# Outside this distance, use min_sub_steps
+precision_distance_km = 50.0
+
+# =============================================================================
+# Probability of Kill (Pk) Factor Weights
+# =============================================================================
+#
+# The Pk calculation uses a weighted log-odds approach instead of simple
+# multiplication. This prevents harsh compounding of factors and allows
+# tuning the relative importance of each factor.
+#
+# Higher weight = factor has more impact on final Pk
+# Weights are relative - they get normalized during calculation
+#
+# Formula:
+#   penalty = sum(weight_i * (1 - factor_i)) / total_weight * severity_scale
+#   final_pk = sigmoid(logit(base_pk) - penalty)
+
+[pk_weights]
+
+# === Critical Factors ===
+# These should have the highest weights (1.5-2.5)
+
+# Timing synchronization - interceptor and missile must arrive at intercept point together
+# If timing is off, the intercept fails regardless of other factors
+timing_sync = 2.0
+
+# Sensor track quality - fire control radar accuracy determines guidance precision
+# Better track = interceptor pointed more accurately at where target will be
+track_quality = 2.0
+
+# Prediction error - how well the calculated intercept point matches missile's actual path
+# Accounts for trajectory estimation errors and target maneuvers
+prediction_error = 2.0
+
+# === Moderate Factors ===
+# These have moderate impact (0.5-1.5)
+
+# Countermeasures - decoys and jamming that confuse the seeker
+# More decoys = harder for seeker to discriminate real target
+countermeasures = 1.0
+
+# Closure speed - combined approach velocity of interceptor and missile
+# Higher closure = less time for seeker to acquire, track, and maneuver
+closure_speed = 1.0
+
+# Aspect angle - intercept geometry (head-on vs tail chase)
+# Head-on (180 degrees) is optimal; tail chase is hardest
+aspect_angle = 0.8
+
+# === Low Priority Factors ===
+# These have minimal impact (0.1-0.5)
+
+# Energy state - remaining fuel/thruster capacity for terminal corrections
+# Usually interceptors have sufficient energy; only matters when depleted
+energy_state = 0.3
+
+# === Severity Scaling ===
+# Controls overall penalty magnitude in logit space
+# Higher = factors have more dramatic impact on final Pk
+# Recommended range: 2.0 (forgiving) to 6.0 (punishing)
+severity_scale = 4.0

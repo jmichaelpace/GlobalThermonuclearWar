@@ -1,0 +1,63 @@
+# AEGIS Geometry Test Scenario
+# Tests intercept guidance at various engagement angles
+# Platform at (35.0, 140.0)
+
+[metadata]
+id = "test_aegis_geometry"
+name = "AEGIS Geometry Test"
+description = "Tests intercept guidance at head-on, crossing, and oblique angles"
+region = "Pacific"
+center_lat = 35.0
+center_lon = 140.0
+zoom = 4.0
+
+# Single AEGIS destroyer
+[[defense_units]]
+name = "USS Test (DDG)"
+affiliation = "Friendly"
+lat = 35.0
+lon = 140.0
+type = "Aegis"
+interceptors = 48
+
+# ============================================================================
+# HEAD-ON ENGAGEMENT (missile targeting the platform)
+# Interceptor flies toward incoming missile - optimal geometry
+# ============================================================================
+
+[[missiles]]
+name = "HEAD-ON"
+affiliation = "Hostile"
+origin_lat = 35.0
+origin_lon = 155.0
+target_lat = 35.0
+target_lon = 140.0
+launch_delay_sec = 10.0
+
+# ============================================================================
+# CROSSING ENGAGEMENT (missile passing by the platform)
+# Interceptor must lead the target significantly
+# ============================================================================
+
+[[missiles]]
+name = "CROSSING"
+affiliation = "Hostile"
+origin_lat = 33.0
+origin_lon = 155.0
+target_lat = 33.0
+target_lon = 125.0
+launch_delay_sec = 20.0
+
+# ============================================================================
+# OBLIQUE ENGAGEMENT (45-degree type angle)
+# Mixed geometry - some lead required
+# ============================================================================
+
+[[missiles]]
+name = "OBLIQUE"
+affiliation = "Hostile"
+origin_lat = 42.0
+origin_lon = 152.0
+target_lat = 32.0
+target_lon = 138.0
+launch_delay_sec = 30.0

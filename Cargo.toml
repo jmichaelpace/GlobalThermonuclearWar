@@ -15,3 +15,8 @@ nalgebra = "0.33"
 rand = "0.8"
 dotenvy = "0.15"
 toml = "0.8"
+
+# Multi-threading
+rayon = "1.10"           # Data parallelism (par_iter)
+crossbeam = "0.8"        # Channels for sim/render communication
+parking_lot = "0.12"     # Faster RwLock/Mutex
