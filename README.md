@@ -11,11 +11,13 @@ A ballistic missile defense simulation built with Rust and egui. Visualize missi
   - Russian: S-400
 - **Sensor-Based Fire Control**: Realistic two-stage engagement (search/track radars → fire control lock)
 - **Track Establishment Requirements**: 3+ measurements, quality thresholds, freshness limits
+- **Converged Trajectory Estimation**: Radar measurements are fitted to the parabolic altitude profile ballistic missiles actually fly, yielding stable launch-point/impact-point/apogee estimates that converge as tracking matures
 - **Automatic Salvo Doctrine**: Intelligent Shoot-Look-Shoot vs Shoot-Shoot-Look selection
 - **Separate Sensor and Interceptor Modeling**: Radars and interceptors configured independently for realistic system composition
 - **Early Warning Satellites**: SBIRS, DSP, Tundra, and other space-based detection systems
 - **TOML-based Configuration**: All system parameters externalized for easy modification
 - **Scenario System**: Pre-built scenarios for different regions and threat environments
+- **In-App Scenario Builder**: Create, edit, test, and save scenarios interactively (see below)
 
 ### Visualization Features
 
@@ -42,16 +44,20 @@ This simulation implements **sensor-based intercepts** instead of "perfect infor
 ✅ **Track Establishment Required**: Must have 3+ sensor measurements before fire control lock authorized
 ✅ **Fire Control Radar Architecture**: Realistic two-stage process (search/track → fire control lock)
 ✅ **Undetected = Unengaged**: Missiles outside sensor coverage cannot be intercepted
+✅ **No Ground-Truth Fallback**: Launch solutions, mid-course guidance, doctrine timing, Pk factors, and terminal lead ALL project the target through the sensor-derived converged trajectory. If the sensor chain can't produce a solution, the launch is refused — by design
 ✅ **Engagement Envelope Enforcement**: THAAD cannot engage ICBMs at 400km altitude (max 150km)
+✅ **Closure Feasibility Checks**: The launch is refused if the interceptor physically cannot reach the intercept point in time (e.g., a short-range interceptor against a fast-crossing MRBM reentry vehicle)
 ✅ **Automatic Salvo Doctrine**: System selects Shoot-Look-Shoot vs Shoot-Shoot-Look based on time available
+✅ **Realistic Misses**: Crossing-geometry targets legitimately miss due to gimbal-limited terminal homing — low-Pk shots fail honestly instead of being silently corrected
 
 ### Sensor & Detection
 
 - **Sensor-Based Intercept Solutions**: Defense systems use only sensor-detected positions, not ground truth
-- **Track Quality Thresholds**: Minimum track quality (0.4) required for engagement authorization
-- **Track Establishment**: Requires 3+ measurements before fire control lock authorized
-- **Position History Tracking**: Maintains 5 most recent position measurements per sensor
-- **Velocity Estimation**: Calculated from position deltas using weighted least-squares
+- **Track Quality Thresholds**: Minimum track quality (0.4) required for track establishment; fire-control engagement requires fused quality ≥0.6
+- **Track Establishment**: Requires 3+ measurements before a track is trusted
+- **Fire Control Quality Gates**: Engagement requires 10+ measurements, velocity confidence ≥0.55, and track staleness <5 seconds
+- **Position History Tracking**: Maintains 100 most recent position measurements per sensor
+- **Velocity Estimation**: Extended Kalman Filter (preferred) with weighted least-squares fallback
 - **Track Staleness**: Tracks degrade without updates; engagements rejected if stale >5 seconds
 - **False Alarm Filtering**: Radar clutter and false alarms do not trigger engagements
 - **Undetected Missiles**: Cannot engage targets outside sensor coverage
@@ -72,6 +78,17 @@ This simulation implements **sensor-based intercepts** instead of "perfect infor
 - **Network-Aided Tracking**: Quality boost when multiple sensors track same target
 - **Track Handoff**: Seamless transfer between sensors as missile moves through coverage
 - **Confidence Weighting**: Recent, high-quality measurements weighted more heavily
+
+### Converged Trajectory Estimation
+
+From radar measurements alone, the simulation reconstructs the missile's full trajectory — launch point, impact point, apogee, and total flight time — and uses it for the impact-prediction marker, interceptor launch solutions, and mid-course guidance:
+
+- **Quadratic Altitude Fit**: Missiles fly a parabolic altitude profile (h(τ) = 4·A·τ·(1−τ)), which is exactly a quadratic in time. A least-squares fit through the measured altitude history recovers launch time, impact time, and apogee analytically — the parabola's roots and vertex
+- **Measurement-Gated Refinement**: Estimates update only when genuinely new radar measurements arrive — no frame-rate jitter
+- **Running Weighted Mean**: Each new estimate blends into the accumulated one with weights that grow with fit quality and time span, so the predicted impact point converges instead of wandering
+- **Outlier Dampening**: A single wild radar glitch cannot yank the estimate (10× weight reduction for >400 km jumps)
+- **Model-Based Fallback**: Before enough history exists for the fit, a consistent (apogee, progress) solver provides a low-weight estimate
+- **Stability Result**: The predicted impact point typically settles to within a few km of truth within seconds of track establishment and then freezes
 
 ### Radar Frequency Bands & Detection Quality
 
@@ -185,19 +202,22 @@ Track quality is calculated from:
   - Minimum 3 sensor measurements to establish track
   - Track quality ≥0.4 (0.0-1.0 scale)
   - Track freshness <5 seconds (no stale data)
-- **Fire Control Lock**: Once track established, precision radar provides intercept-quality data
-- **Iterative Refinement**: 20-iteration convergence to find valid intercept geometry
+- **Fire Control Engagement Gates**: 10+ measurements, fused quality ≥0.6, velocity confidence ≥0.55
+- **Rendezvous Solutions**: The intercept point is a time-and-place meeting — the solver scans the sensor-derived trajectory for the earliest point where the interceptor arrives before the missile, inside the engagement envelope
+- **Unified Arrival-Time Math**: One boost-aware, drag-aware function (`InterceptorKinematics::time_to_cover_distance`) serves launch planning, mid-course guidance, and intercept-time recalculations — three previously-disagreeing formulas caused systematic 1-81s timing errors
+- **No-Late-Arrival Constraint**: Solutions are rejected unless the interceptor reaches the aim point no later than 0.5s after the missile
+- **Cumulative Drag Integration**: Endo-atmospheric interceptors (Patriot, THAAD, Iron Dome, David's Sling) lose speed continuously below 100km (a = ρv²/(2β), 1976 US Standard Atmosphere) — and the arrival-time math accounts for it
 - **Engagement Envelope Validation**: Altitude and range constraints strictly enforced
-- **Time-to-Impact Margin**: Requires ≥3s margin before impact
-- **Interceptor Kinematics**: Realistic boost/coast/terminal phase flight modeling
+- **Terminal Closure Feasibility**: Launch refused if required average speed exceeds interceptor capability by >20%
 - **Two-Phase Flight Model**: Boost acceleration + coast at max velocity
+- **Physics Sub-Stepping**: Up to 100 sub-steps per frame near intercept (~0.7m resolution at 4 km/s closure) — required when kill radii are 30-150m
 
 ### Terminal Guidance
 
 - **Proportional Navigation (PN) Guidance**: True PN law implementation for terminal homing
   - Calculates Line-of-Sight (LOS) angle and rate between interceptor and target
   - Commands lateral acceleration proportional to LOS rate (a = N × Vc × dλ/dt)
-  - Navigation constants: 3.5 (exoatmospheric) to 4.5 (endoatmospheric)
+  - Navigation constant defaults to N=4 (configurable per system)
   - Only activates when seeker has acquired target
 - **Seeker Gimbal Limits**: Realistic field-of-view constraints
   - Off-boresight angle tracking (angle between flight direction and target)
@@ -205,23 +225,22 @@ Track quality is calculated from:
   - Seeker can lose lock if target exits gimbal envelope
 - **Seeker Acquisition**: Time-based acquisition modeling
   - 0.5-second acquisition delay once target enters seeker FOV
+  - Range-gated acquisition: seeker locks only within 1.5× its published acquisition range (e.g., SM-3: 80km seeker → 120km limit)
   - Pk severely reduced (5-30%) without seeker lock
   - Lost lock requires re-acquisition
+- **CPA Resolution with Hysteresis**: Hit-to-kill interceptors can't turn around; a confirmed closest-point-of-approach (10 consecutive increasing-distance ticks) that exceeds the kill radius resolves as a miss immediately
 
 ### Divert & Energy Management
 
 - **Divert Budget Tracking**: Finite fuel for terminal maneuvers
-  - Total delta-V budget varies by system (SM-3: 0.15 km/s, THAAD: 0.3 km/s)
+  - Delta-V budgets vary by system (e.g., GBI EKV: 0.8 km/s, PAC-3: 0.6 km/s, SM-3: 0.4 km/s)
   - PN guidance consumes divert fuel proportionally
   - Interceptor goes ballistic when fuel exhausted
 - **Energy State Management**: Dynamic maneuverability tracking
   - Exoatmospheric systems: purely fuel-based (no recovery)
   - Endoatmospheric systems: partial energy recovery from aerodynamic lift
   - Low energy state reduces Pk by up to 30%
-- **Skid Maneuver**: Last-resort timing correction
-  - Engages only when interceptor would arrive too early
-  - Uses perpendicular divert thrust to bleed speed
-  - Limited to 30% velocity reduction to preserve terminal energy
+- **Early-Arrival Correction**: Instead of artificial speed-bleeding maneuvers, early arrivals are corrected by mid-course guidance re-solving the intercept point from the latest sensor track
 
 ### Debris & Fratricide
 
@@ -259,12 +278,12 @@ Mid-course guidance requires the launching platform to have an active **fire con
 - The track must be of sufficient quality to compute trajectory predictions
 - If fire control lock is lost, mid-course guidance updates stop
 
-**Sensor-Fused Track Prediction:**
+**Sensor-Derived Trajectory Projection:**
 
-The guidance system uses `FusedTrack.project_forward()` to predict target position:
-- Projects current estimated position along the estimated velocity vector
-- Prediction uncertainty grows with time and lower track confidence
-- Poor velocity estimates lead to poor predictions, degrading intercept accuracy
+The guidance system projects the target through the **converged trajectory estimate** (the quadratic-fit trajectory reconstructed from radar measurements — see "Converged Trajectory Estimation" above):
+- Projects the fused track position along the estimated origin→target path at the estimated flight profile
+- Guidance updates are suppressed until a converged estimate exists — no sensor data, no correction
+- The projection reproduces the same parabolic-altitude, constant-ground-speed kinematics threats actually fly, so corrections track the real trajectory closely
 
 **Guidance Update Conditions:**
 
@@ -361,19 +380,20 @@ Pk = base_pk × aspect_factor × track_quality_factor × closure_factor
 
 ### Engagement Doctrine
 
-- **Salvo Fire**: Multiple interceptors (default 2) per target for redundancy
-- **Automatic Doctrine Selection**: System chooses optimal engagement strategy based on time available
-  - **Shoot-Look-Shoot (SLS)**: When time permits (~400s+ to impact)
+- **Salvo Fire**: Multiple interceptors (default salvo of 2) per target for redundancy
+- **Automatic Doctrine Selection**: System chooses optimal engagement strategy based on sensor-derived time-to-impact and track confidence
+  - **Shoot-Look-Shoot (SLS)**: When time permits and track confidence ≥0.75
     - Launch first interceptor
-    - Assess hit/miss after 10s
-    - Launch second only if first missed
+    - Assess hit/miss after a 3-second kill-assessment delay
+    - Launch follow-up only if the first missed
     - **Advantage**: More efficient (conserves interceptors)
-  - **Shoot-Shoot-Look (SSL)**: When time is limited (<400s to impact)
-    - Launch both interceptors immediately
-    - Assess results after both shots
+  - **Shoot-Shoot-Look (SSL)**: When time is limited or confidence is lower
+    - Fire the salvo immediately (spread by a 5s launch delay)
+    - Assess results after all shots
     - **Advantage**: Higher kill probability
-- **Follow-up Shots**: Additional attempts after initial miss (up to salvo_size limit)
-- **Shot Accounting**: Tracks shots fired per target to enforce salvo limits
+- **Confidence-Scaled Salvos**: High-confidence tracks get 1 shot, medium 2, low 3
+- **Per-Target Shot Cap**: `max_shots_per_target` (default 4) bounds total shots across the whole engagement; SLS keeps firing after misses while shots and time remain
+- **Shot Accounting**: Tracks shots fired per target to enforce doctrine limits
 - **Priority Targeting**: Detections sorted by quality and network track status
 
 ### Countermeasures & Deception
@@ -498,10 +518,16 @@ scenarios/
 
 **Creating Custom Scenarios:**
 
-1. Create a new `.toml` file in the `scenarios/` directory
-2. Define metadata, defense units, radars, satellites, and missiles
-3. The scenario automatically appears in the in-game scenario selector
-4. See `scenarios/README.md` for complete format documentation
+Two ways:
+
+1. **In-App Scenario Builder** (recommended): Click **Builder** in the top bar
+   - Place defense units, radars, satellites, and missiles by picking a tool and clicking the map (missiles: click launch point, then target)
+   - Edit any entity's properties in the panel; import existing scenarios for editing
+   - Live validation (errors block saving; warnings explain likely problems)
+   - **Test Run** loads the draft into the live engine without saving; **Save** writes `scenarios/<filename>.toml` and it appears immediately in the scenario selector
+2. **By hand**: Create a new `.toml` file in the `scenarios/` directory, define metadata/defense units/radars/satellites/missiles, and it automatically appears in the in-game scenario selector
+
+See `scenarios/README.md` for complete format documentation.
 
 **Example Scenario File:**
 
@@ -622,7 +648,8 @@ The codebase is organized into modular components for maintainability and perfor
 
 ```
 src/
-├── main.rs              # Application entry point
+├── main.rs              # Application entry point (binary module tree)
+├── lib.rs               # Library target: exposes types, simulation, scenario for tests
 ├── app.rs               # Main application state and rendering
 ├── effects/             # Visual effects system
 │   └── mod.rs           # EffectsManager, explosion/intercept animations
@@ -637,24 +664,38 @@ src/
 │   ├── colors.rs        # Centralized color definitions by affiliation/mode
 │   ├── overlays.rs      # Detection range overlays
 │   └── symbols.rs       # Military symbology
-├── scenario/            # Scenario loading
-│   └── mod.rs           # TOML scenario parser
+├── ui/                  # Feature UI modules (binary only)
+│   └── scenario_builder.rs  # Scenario builder panel, tools, draft overlay
+├── scenario/            # Scenario loading and building
+│   ├── loader.rs        # TOML scenario parser (Serialize + Deserialize)
+│   └── builder.rs       # Draft model, validation, save (lib, unit-tested)
 └── simulation/          # Core simulation engine
-    ├── engine.rs        # SimulationEngine, entity updates
-    ├── entities.rs      # Missile, Interceptor, DefenseUnit, etc.
-    ├── detection.rs     # Sensor modeling, track fusion
-    ├── physics.rs       # Ballistic trajectory calculations
-    ├── kalman.rs        # Kalman filter for track estimation
+    ├── engine.rs        # SimulationEngine, engagement logic, fire control
+    ├── entities.rs      # Missile, Interceptor, DefenseUnit, InterceptorKinematics
+    ├── detection.rs     # Sensor modeling, track fusion, converged trajectories
+    ├── physics.rs       # Ballistic trajectories, Lambert guidance
+    ├── ekf.rs           # Extended Kalman filter (geodetic state, radar measurements)
+    ├── kalman.rs        # Linear Kalman filter for track estimation
+    ├── runner.rs        # Sim/render thread split via crossbeam channels
     └── config.rs        # Configuration registries
+
+tests/                   # Integration tests (run against the library target)
+├── track_prediction_test.rs        # Track velocity estimation, EKF convergence
+├── impact_prediction_test.rs       # Converged trajectory accuracy/stability
+├── interceptor_engagement_test.rs  # Deterministic intercept, envelopes, doctrine
+└── scenario_builder_test.rs        # TOML round-trip, draft→engine chain
 ```
 
 ### Key Design Patterns
 
+- **Sensor-Derived Fire Control**: ALL engagement decisions (launch solutions, guidance, doctrine timing, Pk factors, terminal lead) project the target through the converged trajectory estimate from radar measurements — there is deliberately no ground-truth fallback
+- **Single Source of Truth for Arrival Timing**: `InterceptorKinematics::time_to_cover_distance` (boost- and drag-aware) serves every arrival-time calculation
 - **HashMap for O(1) Lookups**: Trajectory and track lookups use HashMaps instead of linear searches
 - **Modular Effects System**: Visual effects (explosions, intercepts) are managed by `EffectsManager` with spawnable effect requests
 - **Consolidated Event Tracking**: All simulation event state is encapsulated in `EventTracker`
 - **Projection Abstraction**: `MapProjection` trait enables unified rendering across 2D/3D views
 - **Centralized Colors**: Affiliation-based colors defined once in `rendering/colors.rs`
+- **Dual Module Trees**: The binary and library targets declare identical module trees; integration tests run against the library. Keep `pub mod`/`pub use` in both trees in sync
 
 ## Development
 
@@ -666,6 +707,33 @@ cargo clippy   # Run linter
 cargo test     # Run tests
 cargo check    # Quick compile check
 ```
+
+### Testing
+
+Integration tests live in `tests/` and run against the library target:
+
+```bash
+cargo test                                              # Full suite
+cargo test --test interceptor_engagement_test           # One suite
+cargo test test_aegis_intercepts_mrbm_deterministic     # One test by name
+```
+
+The suite covers impact-prediction accuracy/stability (the yellow X marker must converge near truth and stop moving), deterministic Aegis-vs-MRBM interception, engagement envelope enforcement (THAAD refuses ICBM apogees), no-launch-without-track-quality, shoot-look-shoot doctrine, and TOML scenario round-trips on every scenario file.
+
+Unit tests also live inline (`#[cfg(test)]`): scenario builder draft/validation logic in `src/scenario/builder.rs` and headless egui render tests for the builder panel in `src/ui/scenario_builder.rs`.
+
+## Documentation
+
+Domain documentation lives in `docs/`:
+
+- `radar-detection-tracking.md` — sensor modeling, track establishment, fusion
+- `platform-intercept-geometry.md` — intercept kinematics and firing logic
+- `physics.md` — trajectory and flight physics
+- `audit-plan.md` — implementation progress vs. domain requirements
+- `ballistic-track-explainer.md` — how missile tracks are computed, explained at a high-school level with code references
+- `interceptor-logic-explainer.md` — how interceptors are launched, guided, and resolved, same style
+
+Configuration reference: `config/` (equipment specs), `scenarios/README.md` (scenario format), `AGENTS.md` (development conventions for coding agents).
 
 ## License
 
