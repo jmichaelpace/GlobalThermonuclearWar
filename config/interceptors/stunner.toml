@@ -21,13 +21,15 @@ boost_duration_sec = 10.0
 # Acceleration during boost phase (g-forces, 1g = 9.81 m/s²)
 boost_acceleration_g = 15.0
 # Maximum velocity achieved by interceptor (km/s)
-max_velocity_km_s = 2.0
+# Three-pulse motor reaches speeds of up to Mach 7.5 (~2.55 km/s)
+# https://missilethreat.csis.org/defsys/davids-sling/
+max_velocity_km_s = 2.55
 # Maximum g-force for terminal maneuvering to hit target (g-forces)
 terminal_maneuver_g = 40.0
 # Altitude at which boost phase ends and coast begins (km)
 burnout_altitude_km = 10.0
 # Average speed over entire flight (km/s) - used for quick time estimates
-average_speed_km_s = 1.2
+average_speed_km_s = 1.5
 
 # Engagement effectiveness parameters
 [engagement]

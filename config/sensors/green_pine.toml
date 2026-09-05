@@ -10,6 +10,8 @@ country = "Israel"
 # Detection and coverage parameters
 [detection]
 # Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
+# EL/M-2080 Green Pine: ~800 km published detection range (Super Green Pine
+# upgrades extend this). https://missilethreat.csis.org/system/israeli/
 detection_range_km = 800.0
 # Horizontal field of view (degrees) - how wide the radar can scan
 azimuth_coverage_deg = 120.0

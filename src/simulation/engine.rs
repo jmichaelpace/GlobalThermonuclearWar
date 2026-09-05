@@ -481,6 +481,31 @@ impl SimulationEngine {
         defense_type: DefenseType,
         interceptors: u32,
     ) -> EntityId {
+        self.add_defense_unit_with_facing(
+            name,
+            affiliation,
+            position,
+            defense_type,
+            interceptors,
+            None,
+        )
+    }
+
+    /// Add a defense unit whose sensors face a given azimuth (degrees, 0=North).
+    ///
+    /// Emplacement orientation: real batteries are sited with their fire
+    /// control radar boresight on the expected threat axis. `facing_deg`
+    /// rotates the azimuth center of every sensor the unit carries; sensors
+    /// with 360-degree coverage are unaffected.
+    pub fn add_defense_unit_with_facing(
+        &mut self,
+        name: String,
+        affiliation: Affiliation,
+        position: GeoCoord,
+        defense_type: DefenseType,
+        interceptors: u32,
+        facing_deg: Option<f64>,
+    ) -> EntityId {
         let id = self.new_id();
         let mut unit =
             DefenseUnit::new(id, name, affiliation, position, defense_type, interceptors);
@@ -507,11 +532,19 @@ impl SimulationEngine {
                 .azimuth_coverage_override_deg
                 .unwrap_or(detection_config.detection.azimuth_coverage_deg);
 
+            // Emplacement orientation: rotate the sensor's azimuth center to
+            // the unit's facing (360-degree sensors ignore this - their
+            // bearing check short-circuits on full coverage).
+            let azimuth_center_deg = match facing_deg {
+                Some(facing) if azimuth_coverage < 360.0 => facing,
+                _ => sensor_config.azimuth_center_deg,
+            };
+
             unit.sensors.push(DefenseUnitSensor {
                 sensor_id,
                 config_name: sensor_config.config_name.clone(),
                 role: sensor_config.role,
-                azimuth_center_deg: sensor_config.azimuth_center_deg,
+                azimuth_center_deg,
                 azimuth_coverage_deg: azimuth_coverage,
             });
         }
@@ -1975,7 +2008,14 @@ impl SimulationEngine {
                     None => continue,
                 };
 
-                if missile.affiliation != Affiliation::Hostile {
+                // IFF gate: engage anything that is not own-side and not
+                // Neutral. (Previously: only Hostile missiles were engaged,
+                // which made red-side defenses - a Hostile battery shooting
+                // down Friendly attackers - impossible. Neutral tracks are
+                // never engaged by either side.)
+                if missile.affiliation == unit.affiliation
+                    || missile.affiliation == Affiliation::Neutral
+                {
                     continue;
                 }
                 if !matches!(

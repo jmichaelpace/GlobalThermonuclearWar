@@ -1,41 +1,34 @@
 # System identification and metadata
 [system]
 # Official system designation
-name = "SBX-1"
+name = "Don-2N"
 # Full system description and primary role
-description = "Sea-Based X-band Radar for midcourse discrimination"
+description = "Don-2N (NATO: Pill Box) ABM battle-management radar, Pushkino, Moscow"
 # Operating country/nation
-country = "USA"
+country = "Russia"
 
 # Detection and coverage parameters
 [detection]
 # Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
-detection_range_km = 4000.0
+detection_range_km = 1000.0  # ~1,000 km vs ballistic missile warheads (published detection range ~3,700 km vs larger objects; 1000 km vs RV-class targets)
 # Horizontal field of view (degrees) - how wide the radar can scan
-# SBX's field of view is famously narrow - likened to a "soda straw" - and it
-# relies on other sensors for cueing (it cannot be used as a standalone sensor).
-# https://missilethreat.csis.org/defsys/sbx/
-azimuth_coverage_deg = 25.0
+azimuth_coverage_deg = 360.0  # Four 90-degree faces give full coverage
 # Minimum elevation angle radar can scan (degrees above horizon)
 elevation_min_deg = 0.0
 # Maximum elevation angle radar can scan (degrees, 90 = straight up)
 elevation_max_deg = 90.0
 # Radar frequency band - affects range, resolution, and atmospheric attenuation
-radar_band = "X"  # X-band (9-10 GHz) - excellent resolution for discrimination
+radar_band = "X"  # Centimeter-wave (~3 cm wavelength); X-band is the modeled equivalent
 # Radar scanning mechanism type
 radar_type = "phased_array"
-# The full antenna can electronically steer within its narrow arc; no wider
-# search/track modes (the "soda straw" applies in all modes)
-track_azimuth_multiplier = 1.0
-fire_control_azimuth_multiplier = 1.0
 
 # Tracking and processing capabilities
 [tracking]
 # Maximum number of targets that can be tracked simultaneously
-max_simultaneous_tracks = 20
+max_simultaneous_tracks = 100
 # How many times per second the radar updates track data (Hz)
-track_update_rate_hz = 5.0
+track_update_rate_hz = 2.0
 # Minimum radar cross section detectable (dBsm, lower = can detect smaller targets)
-minimum_rcs_dbsm = -40.0
+minimum_rcs_dbsm = -30.0  # Designed to detect 5 cm spherical metal targets
 # Maximum fire control tracks
-max_fire_control_tracks = 4
+max_fire_control_tracks = 16

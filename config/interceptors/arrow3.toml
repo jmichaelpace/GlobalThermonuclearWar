@@ -10,9 +10,12 @@ country = "Israel"
 # Altitude constraints for engagement
 [altitude_envelope]
 # Minimum altitude where intercepts can occur (km) - below this, out of envelope
-min_engagement_altitude_km = 50.0
+# Arrow 3 intercepts its targets in space (exo-atmospheric); it complements
+# Arrow 2, which engages targets in the upper atmosphere.
+# https://missilethreat.csis.org/defsys/arrow-3/
+min_engagement_altitude_km = 100.0
 # Maximum altitude where intercepts can occur (km) - above this, out of envelope
-max_engagement_altitude_km = 100.0
+max_engagement_altitude_km = 1000.0
 
 # Interceptor flight performance characteristics
 [kinematics]
@@ -21,11 +24,11 @@ boost_duration_sec = 25.0
 # Acceleration during boost phase (g-forces, 1g = 9.81 m/s²)
 boost_acceleration_g = 12.0
 # Maximum velocity achieved by interceptor (km/s)
-max_velocity_km_s = 2.5
+max_velocity_km_s = 3.0
 # Maximum g-force for terminal maneuvering to hit target (g-forces)
 terminal_maneuver_g = 20.0
 # Altitude at which boost phase ends and coast begins (km)
-burnout_altitude_km = 50.0
+burnout_altitude_km = 100.0
 # Average speed over entire flight (km/s) - used for quick time estimates
 average_speed_km_s = 2.5
 

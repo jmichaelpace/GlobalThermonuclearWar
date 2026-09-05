@@ -1,17 +1,18 @@
 # GBI (Ground-Based Interceptor) Test Scenario
-# Isolated test of GBI + SBX radar against ICBM midcourse
-# Engagement envelope: 200-2000km altitude, ~2000km range
+# Isolated test of GBI + Cobra Dane platform radar + SBX cueing vs ICBM midcourse
+# GBI EKV envelope: 200-2000 km altitude, 2000 km engagement range
+# Missiles use the Hwasong-15 profile (apogee 800 + 0.08*range, 2 decoys).
 
 [metadata]
 id = "test_gbi"
 name = "GBI Test"
-description = "GBI Site vs ICBM midcourse (200-2000km altitude envelope)"
+description = "GBI Site vs Hwasong-15 ICBMs (midcourse, 200-2000km envelope)"
 region = "Pacific"
 center_lat = 50.0
 center_lon = -160.0
 zoom = 2.5
 
-# Single GBI site
+# Single GBI site - platform radar is Cobra Dane (120-degree cone), aimed at the NK launch axis
 [[defense_units]]
 name = "GBI Test Site"
 affiliation = "Friendly"
@@ -19,18 +20,22 @@ lat = 64.0
 lon = -152.0
 type = "GBI"
 interceptors = 44
+facing_deg = 284.0  # NK origins at bearing ~334 from site; 284 keeps the whole boost arc in the cone
 
-# SBX radar for long-range tracking
+# SBX radar for long-range tracking/cueing (4000 km, 25-degree "soda straw" arc)
 [[radar_stations]]
 name = "SBX Radar"
 affiliation = "Friendly"
 lat = 60.0
 lon = -160.0
-range_km = 2000.0
+range_km = 4000.0
+sensor_config = "SBX-1"
+facing_deg = 353.0  # ICBM2 arc passes at bearing 353; ICBM1's 197 is outside the arc (Cobra Dane covers it)
 
-# ICBM - ~8000km range, apogee ~800km (mid envelope)
+# Hwasong-15: apogee 800 + 0.08*range
+# ~9,075 km range (NK->SF), ~1,525 km apogee (mid envelope - GBI engages at midcourse)
 [[missiles]]
-name = "ICBM-1"
+name = "Hwasong-15 #1"
 affiliation = "Hostile"
 origin_lat = 40.0
 origin_lon = 125.0
@@ -38,9 +43,9 @@ target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 20.0
 
-# ICBM - ~10000km range, apogee ~1000km (high midcourse)
+# Hwasong-15: ~10,000 km range (NK->NYC), ~1,600 km apogee (high midcourse)
 [[missiles]]
-name = "ICBM-2"
+name = "Hwasong-15 #2"
 affiliation = "Hostile"
 origin_lat = 42.0
 origin_lon = 128.0

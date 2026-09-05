@@ -1,17 +1,18 @@
 # AEGIS Test Scenario
-# Isolated test of AEGIS + SPY-1 radar against MRBM/IRBM
-# Engagement envelope: 70-500km altitude, ~500km range
+# Isolated test of AEGIS + SPY-1D radar against MRBM/IRBM-class threats
+# SM-3 Block IIA envelope: 100-600 km altitude (exo-atmospheric), 2,500 km flyout
+# All missiles use config-backed profiles.
 
 [metadata]
 id = "test_aegis"
 name = "AEGIS Test"
-description = "AEGIS Destroyer vs MRBM/IRBM (70-500km altitude envelope)"
+description = "AEGIS Destroyer vs MRBM/IRBM (exo midcourse, 100-600km envelope)"
 region = "Pacific"
 center_lat = 35.0
 center_lon = 140.0
 zoom = 4.0
 
-# Single AEGIS destroyer
+# Single AEGIS destroyer - SPY-1D is 360-degree coverage, no facing needed
 [[defense_units]]
 name = "USS Test (DDG)"
 affiliation = "Friendly"
@@ -20,9 +21,10 @@ lon = 140.0
 type = "Aegis"
 interceptors = 48
 
-# MRBM - ~1500km range, apogee ~150km (low end of envelope)
+# Shahab-3: apogee 150 + 0.18*range
+# ~1,183 km range -> ~363 km apogee (mid envelope)
 [[missiles]]
-name = "MRBM-1"
+name = "Shahab-3 #1"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 153.0
@@ -30,9 +32,10 @@ target_lat = 35.0
 target_lon = 140.0
 launch_delay_sec = 10.0
 
-# MRBM - ~2500km range, apogee ~250km (mid envelope)
+# Sejjil: apogee 250 + 0.16*range
+# ~2,000 km range -> ~570 km apogee (upper envelope)
 [[missiles]]
-name = "MRBM-2"
+name = "Sejjil #1"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 162.0
@@ -40,9 +43,11 @@ target_lat = 35.0
 target_lon = 140.0
 launch_delay_sec = 25.0
 
-# IRBM - ~4000km range, apogee ~400km (high end of envelope)
+# RS-26: apogee 300 + 0.12*range
+# ~3,171 km range -> ~680 km apogee - above SM-3's 600 km ceiling at apogee;
+# engages on descent through the 600-100 km exo band
 [[missiles]]
-name = "IRBM-1"
+name = "RS-26 Rubezh #1"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 175.0

@@ -1,0 +1,94 @@
+# North Atlantic - SLBM Strike
+# Russian submarine-launched ballistic missiles vs US East Coast defenses
+# Exercises the SLBM profiles (Bulava, Sineva) and the new BMEWS sensor
+# configs (Thule, PAVE PAWS) together with depressed SLBM flight timing.
+
+[metadata]
+id = "north_atlantic"
+name = "North Atlantic SLBM Strike"
+description = "Russian SLBM launches vs US East Coast (Bulava/Sineva vs BMEWS + Aegis)"
+region = "North Atlantic"
+center_lat = 55.0
+center_lon = -35.0
+zoom = 2.5
+
+# Defense Units
+[[defense_units]]
+name = "USS Nitze (Aegis)"
+affiliation = "Friendly"
+lat = 40.5
+lon = -68.0
+type = "Aegis"
+interceptors = 96
+# SPY-1: 360-degree coverage - no facing needed
+
+[[defense_units]]
+name = "USS Gonzalez (Aegis)"
+affiliation = "Friendly"
+lat = 36.0
+lon = -73.0
+type = "Aegis"
+interceptors = 96
+# SPY-1: 360-degree coverage - no facing needed
+
+# Early Warning
+[[radar_stations]]
+name = "Thule BMEWS"
+affiliation = "Friendly"
+lat = 76.5
+lon = -68.7
+range_km = 3000.0
+sensor_config = "Thule"
+facing_deg = 55.0  # 240-degree cone aimed at the Barents/Norwegian Sea launch boxes
+
+[[radar_stations]]
+name = "PAVE PAWS Cape Cod"
+affiliation = "Friendly"
+lat = 41.8
+lon = -70.5
+range_km = 3000.0
+sensor_config = "PAVE PAWS"
+facing_deg = 75.0  # 240-degree cone aimed at the North Atlantic launch corridor
+
+# Satellites
+[[satellites]]
+name = "SBIRS GEO-5 (Atlantic)"
+affiliation = "Friendly"
+lat = 0.0
+lon = -30.0
+altitude_km = 35786.0
+sensor_type = "Infrared"
+
+# Missiles - SLBM profiles
+# Bulava: apogee 500 + 0.1*range, 4 decoys
+# Sineva: apogee 600 + 0.09*range, 4 decoys
+
+# Bulava - Barents Sea box, depressed arc to DC (~6,000 km, apogee ~1,100 km)
+[[missiles]]
+name = "Bulava #1"
+affiliation = "Hostile"
+origin_lat = 72.0
+origin_lon = 38.0
+target_lat = 38.9
+target_lon = -77.0
+launch_delay_sec = 30.0
+
+# Bulava - Norwegian Sea box, arc to NYC (~6,100 km, apogee ~1,110 km)
+[[missiles]]
+name = "Bulava #2"
+affiliation = "Hostile"
+origin_lat = 68.0
+origin_lon = 5.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 45.0
+
+# Sineva - Norwegian Sea box, longer arc to Norfolk (~7,000 km, apogee ~1,230 km)
+[[missiles]]
+name = "Sineva #1"
+affiliation = "Hostile"
+origin_lat = 66.0
+origin_lon = -5.0
+target_lat = 36.9
+target_lon = -76.3
+launch_delay_sec = 60.0

@@ -1,6 +1,7 @@
 # AN/TPY-2 Radar Test Scenario
 # THAAD X-band radar in forward-based mode
-# Detection range: ~1000km, high-resolution tracking
+# AN/TPY-2 config: 1000 km nominal detection (1.5x = 1500 km max), X-band,
+# 120-degree azimuth cone, 2.5x track / 4.0x fire-control range multipliers.
 
 [metadata]
 id = "test_sensor_tpy2"
@@ -11,17 +12,20 @@ center_lat = 37.0
 center_lon = 127.0
 zoom = 4.0
 
-# TPY-2 radar (forward deployed, e.g., South Korea)
+# TPY-2 radar (forward deployed, South Korea) - 120-degree cone aimed at
+# the NK launch region (threat bearings 152-206; a 180-centered cone covers it)
 [[radar_stations]]
 name = "AN/TPY-2 Forward"
 affiliation = "Friendly"
 lat = 37.0
 lon = 127.0
 range_km = 1000.0
+sensor_config = "AN/TPY-2"
+facing_deg = 180.0
 
-# SRBM - ~300km from radar, apogee ~60km
+# SRBM - Iskander-M profile, ~281 km from radar (well inside 1000 km)
 [[missiles]]
-name = "SRBM Close"
+name = "Iskander-M #Close"
 affiliation = "Hostile"
 origin_lat = 39.5
 origin_lon = 127.5
@@ -29,9 +33,9 @@ target_lat = 37.5
 target_lon = 126.9
 launch_delay_sec = 10.0
 
-# MRBM - ~600km from radar, apogee ~150km
+# MRBM - Shahab-3 profile, ~376 km from radar at launch
 [[missiles]]
-name = "MRBM Near"
+name = "Shahab-3 #Near"
 affiliation = "Hostile"
 origin_lat = 40.0
 origin_lon = 125.0
@@ -39,9 +43,9 @@ target_lat = 35.0
 target_lon = 126.5
 launch_delay_sec = 25.0
 
-# IRBM - ~900km from radar, apogee ~350km
+# IRBM - RS-26 profile, ~613 km from radar at launch
 [[missiles]]
-name = "IRBM Mid"
+name = "RS-26 Rubezh #Mid"
 affiliation = "Hostile"
 origin_lat = 42.0
 origin_lon = 130.0
@@ -49,9 +53,10 @@ target_lat = 34.0
 target_lon = 126.0
 launch_delay_sec = 40.0
 
-# ICBM - ~1000km from radar (at detection limit)
+# ICBM - Hwasong-15 profile, NK->CONUS arc: detected on the boost/climb
+# portion inside the cone
 [[missiles]]
-name = "ICBM Limit"
+name = "Hwasong-15 #Limit"
 affiliation = "Hostile"
 origin_lat = 40.0
 origin_lon = 125.0
@@ -59,12 +64,13 @@ target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 55.0
 
-# Beyond range - ~1200km
+# Beyond range - ICBM arc from far-north launch site passes ~1,200+ km
+# from the radar (outside the 1.5x max envelope) - should stay undetected
 [[missiles]]
-name = "ICBM Beyond"
+name = "Hwasong-15 #Beyond"
 affiliation = "Hostile"
-origin_lat = 35.0
-origin_lon = 120.0
+origin_lat = 50.0
+origin_lon = 131.0
 target_lat = 40.7
 target_lon = -74.0
 launch_delay_sec = 70.0

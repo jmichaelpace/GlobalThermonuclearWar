@@ -183,7 +183,7 @@ This document captures the audit of the simulation codebase against the domain r
 After implementing changes:
 - [x] Run `cargo test` - all tests pass ✅
 - [x] Run `cargo clippy` - no new errors ✅
-- [ ] Test each scenario in `/scenarios/` directory
+- [x] Test each scenario in `/scenarios/` directory ✅ (scenario audit: all 24 scenarios rewired with explicit `sensor_config`, config-backed missile profiles, and `facing_deg` for narrow-azimuth sensors; `tests/scenario_wiring_test.rs` now guards this permanently)
 - [ ] Verify Patriot engages at correct ranges
 - [ ] Verify GBI/Arrow 3 use Lambert guidance above 100 km
 - [ ] Verify trajectory predictions match expected physics

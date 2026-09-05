@@ -1,17 +1,19 @@
 # David's Sling Test Scenario
-# Isolated test of David's Sling (Stunner interceptor) against SRBM/MRBM
-# Engagement envelope: 10-70km altitude, ~300km range
+# Isolated test of David's Sling (EL/M-2084 radar + Stunner interceptor)
+# Stunner envelope: 2-15 km altitude, 300 km engagement range, 2.55 km/s (Mach 7.5)
+# All missiles use config-backed profiles.
 
 [metadata]
 id = "test_davids_sling"
 name = "David's Sling Test"
-description = "David's Sling Battery vs SRBM/MRBM (10-70km altitude)"
+description = "David's Sling Battery vs Iskander-M/Shahab-3 (terminal window, 2-15km envelope)"
 region = "Middle East"
 center_lat = 32.0
-center_lon = 35.0
-zoom = 5.0
+center_lon = 35.3
+zoom = 6.0
 
-# Single David's Sling battery
+# Single David's Sling battery - EL/M-2084 120-degree cone aimed at the
+# northeastern launch box (bearings 40-47)
 [[defense_units]]
 name = "David's Sling Test Battery"
 affiliation = "Friendly"
@@ -19,10 +21,13 @@ lat = 32.0
 lon = 35.0
 type = "DavidsSling"
 interceptors = 48
+facing_deg = 44.0  # Launch box spans bearings 40-47 (NE)
 
-# SRBM - ~300km range, apogee ~50km (mid envelope)
+# Iskander-M: apogee 50 + 0.1*range
+# ~218 km range -> ~72 km apogee - far above Stunner's 15 km ceiling at apogee;
+# engages only in the last seconds of terminal descent (realistic Stunner shot)
 [[missiles]]
-name = "SRBM-1"
+name = "Iskander-M #1"
 affiliation = "Hostile"
 origin_lat = 33.5
 origin_lon = 36.5
@@ -30,9 +35,9 @@ target_lat = 32.0
 target_lon = 35.0
 launch_delay_sec = 10.0
 
-# SRBM - ~500km range, apogee ~70km (high end of envelope)
+# Iskander-M: ~434 km range -> ~93 km apogee - terminal-descent engagement
 [[missiles]]
-name = "SRBM-2"
+name = "Iskander-M #2"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 38.0
@@ -40,9 +45,12 @@ target_lat = 32.0
 target_lon = 35.0
 launch_delay_sec = 20.0
 
-# MRBM - ~800km range, apogee ~90km (slightly above optimal)
+# Shahab-3: apogee 150 + 0.18*range
+# ~640 km range -> ~265 km apogee - MRBM against a low-tier defender;
+# engagement window is tiny (terminal seconds below 15 km) - expect misses
+# or refusals. That is the realistic outcome for this pairing.
 [[missiles]]
-name = "MRBM-1"
+name = "Shahab-3 #1"
 affiliation = "Hostile"
 origin_lat = 36.0
 origin_lon = 40.0

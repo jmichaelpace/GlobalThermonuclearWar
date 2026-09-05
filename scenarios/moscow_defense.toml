@@ -1,0 +1,73 @@
+# Moscow Defense (red-side)
+# Hostile-affiliation S-400 + Don-2N radar defending Moscow against
+# Friendly-affiliation Trident II SLBMs.
+#
+# Purpose: exercises the IFF/engagement gate with a red-side defense (Hostile
+# units engaging Friendly attackers), red-side sensor tracking, and envelope
+# refusal logic. Expected outcome: the Don-2N detects and tracks the Tridents
+# on approach, but the 40N6 interceptor (0.01-30 km envelope, 2.1 km/s)
+# refuses midcourse engagements against ~1,400 km-apogee SLBMs - the terminal
+# window is the only possible engagement, and it is short. This is the
+# realistic result: the real Moscow ABM relies on the A-135's 53T6, not an
+# S-400, for exo-atmospheric work.
+
+[metadata]
+id = "moscow_defense"
+name = "Moscow Defense (Red Side)"
+description = "Red-side S-400/Don-2N vs Friendly Trident II SLBMs - IFF and envelope-refusal test"
+region = "Europe"
+center_lat = 56.0
+center_lon = 30.0
+zoom = 3.0
+
+# Russian Defense (Hostile affiliation - the red side)
+[[defense_units]]
+name = "S-400 Battery Moscow"
+affiliation = "Hostile"
+lat = 55.9
+lon = 37.4
+type = "S400"
+interceptors = 64
+facing_deg = 295.0  # Grave Stone 90-degree FC cone aimed at the Norwegian Sea approach (bearing ~295 from Moscow)
+
+[[radar_stations]]
+name = "Don-2N Pushkino"
+affiliation = "Hostile"
+lat = 55.9
+lon = 37.8
+range_km = 1000.0
+sensor_config = "Don-2N"
+# 360-degree (four-face) coverage - no facing needed
+
+# US Attackers (Friendly affiliation)
+# Trident II profile: apogee 700 + 0.08*range, 4 decoys (MK-4A penaids)
+
+# Trident II - Norwegian Sea box (~2,500 km, apogee ~900 km)
+[[missiles]]
+name = "Trident II #1"
+affiliation = "Friendly"
+origin_lat = 68.0
+origin_lon = 5.0
+target_lat = 55.75
+target_lon = 37.62
+launch_delay_sec = 20.0
+
+# Trident II - Barents Sea box (~2,200 km, apogee ~875 km)
+[[missiles]]
+name = "Trident II #2"
+affiliation = "Friendly"
+origin_lat = 71.0
+origin_lon = 40.0
+target_lat = 55.75
+target_lon = 37.62
+launch_delay_sec = 40.0
+
+# Trident II - Baltic approach (~1,500 km, apogee ~820 km)
+[[missiles]]
+name = "Trident II #3"
+affiliation = "Friendly"
+origin_lat = 57.0
+origin_lon = 19.0
+target_lat = 55.75
+target_lon = 37.62
+launch_delay_sec = 60.0

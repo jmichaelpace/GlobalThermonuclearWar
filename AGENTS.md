@@ -45,7 +45,7 @@ Ballistic missile defense simulation in Rust + egui, targeting macOS Apple Silic
 - Simulation-wide params: `config/simulation.toml` (physics sub-stepping, Pk weights)
 - System specs: `config/sensors/`, `config/interceptors/`, `config/satellites/`, `config/missiles/`
 - `config/platform/` is **legacy** — use sensor/interceptor dirs for new work
-- **Config files are authoritative**: they encode real-world published specs (ranges, altitudes, interceptor counts). Do not modify equipment specs without asking first. A config line with a trailing TOML comment is locked — never change its value.
+- **Config files are authoritative**: they encode real-world published specs (ranges, altitudes, interceptor counts). Do not modify equipment specs without asking first.
 - Scenarios: TOML in `scenarios/`; defense unit `type` strings are case-sensitive (`THAAD`, `Aegis`, `Patriot`, `GBI`, `IronDome`, `Arrow3`, `DavidsSling`, `S400`).
 
 ## Environment

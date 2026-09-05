@@ -1,6 +1,7 @@
 # AN/SPY-1 Radar Test Scenario
 # AEGIS SPY-1D phased-array radar
-# Detection range: ~400km volume search, S-band
+# AN/SPY-1D config: 500 km nominal detection (1.5x = 750 km max), S-band,
+# 360-degree azimuth (four fixed faces).
 
 [metadata]
 id = "test_sensor_spy1"
@@ -8,20 +9,26 @@ name = "AN/SPY-1 Radar Test"
 description = "AEGIS AN/SPY-1D radar volume search and tracking test"
 region = "Pacific"
 center_lat = 35.0
-center_lon = 140.0
+center_lon = 141.5
 zoom = 5.0
 
-# SPY-1 radar (AEGIS destroyer)
+# SPY-1 radar (AEGIS destroyer) - 360-degree coverage, no facing needed
 [[radar_stations]]
 name = "AN/SPY-1D (DDG)"
 affiliation = "Friendly"
 lat = 35.0
 lon = 140.0
-range_km = 400.0
+range_km = 500.0
+sensor_config = "AN/SPY-1D"
 
-# SRBM - ~150km from radar, apogee ~50km
+# Threat ladder to the east of the destroyer. Config-backed profiles:
+# - Iskander-M: apogee 50 + 0.1*range
+# - Shahab-3: apogee 150 + 0.18*range
+# - RS-26: apogee 300 + 0.12*range
+
+# SRBM - ~150 km from radar (inside nominal 500 km)
 [[missiles]]
-name = "SRBM Close"
+name = "Iskander-M #Close"
 affiliation = "Hostile"
 origin_lat = 36.0
 origin_lon = 141.5
@@ -29,9 +36,9 @@ target_lat = 35.0
 target_lon = 140.0
 launch_delay_sec = 10.0
 
-# MRBM - ~250km from radar, apogee ~150km
+# MRBM - ~260 km from radar (inside nominal)
 [[missiles]]
-name = "MRBM Near"
+name = "Shahab-3 #Near"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 143.0
@@ -39,9 +46,9 @@ target_lat = 35.0
 target_lon = 140.0
 launch_delay_sec = 25.0
 
-# MRBM - ~350km from radar, apogee ~200km
+# MRBM - ~430 km from radar (near nominal limit)
 [[missiles]]
-name = "MRBM Mid"
+name = "Shahab-3 #Mid"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 145.0
@@ -49,9 +56,9 @@ target_lat = 35.0
 target_lon = 140.0
 launch_delay_sec = 40.0
 
-# IRBM - ~400km from radar (at detection limit)
+# IRBM - ~560 km from radar (just past nominal; inside 1.5x max)
 [[missiles]]
-name = "IRBM Limit"
+name = "RS-26 Rubezh #Limit"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 146.0
@@ -59,9 +66,9 @@ target_lat = 35.0
 target_lon = 140.0
 launch_delay_sec = 55.0
 
-# Beyond range - ~500km
+# Beyond range - ~730 km from radar, at/just past the 1.5x max edge
 [[missiles]]
-name = "IRBM Beyond"
+name = "RS-26 Rubezh #Beyond"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 148.0

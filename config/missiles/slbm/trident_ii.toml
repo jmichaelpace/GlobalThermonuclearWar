@@ -1,49 +1,56 @@
 # System identification and description
 [system]
 # Official missile designation
-name = "Shahab-3"
+name = "Trident II"
 # Full system name and role
-description = "Iranian medium-range ballistic missile"
+description = "UGM-133A Trident II D5 submarine-launched ballistic missile"
 # Operating country/nation
-country = "Iran"
+country = "USA"
 
 # Missile classification
 [classification]
 # Type: ICBM (Intercontinental), IRBM (Intermediate), MRBM (Medium), SRBM (Short), SLBM (Sub-launched)
-type = "MRBM"
+type = "SLBM"
 
 # Range capabilities
 [range]
 # Minimum operational range (km) - below this, targeting may be impractical
-min_range_km = 800.0
+min_range_km = 2000.0
 # Maximum range at optimal trajectory (km)
-# Range is likely about 1,300 km depending on payload; Ghadr variants reach
-# ~1,600-1,950 km. https://missilethreat.csis.org/missile/shahab-3/
-max_range_km = 1300.0
+max_range_km = 12000.0  # Published: >12,000 km
 
 # Ballistic trajectory parameters
 [trajectory]
-# Base apogee altitude (km) - trajectory peak altitude for minimum range
-apogee_base_km = 150.0
+# Base apogee altitude (km) - trajectory peak altitude for minimum range shot
+apogee_base_km = 700.0
 # How much apogee increases per km of range (multiplier)
-apogee_range_factor = 0.18
+apogee_range_factor = 0.08  # ~1,200 km apogee at 6,000 km range - depressed SLBM profiles
 # Base flight time (seconds) for minimum range shot
-flight_time_base_sec = 400.0
+flight_time_base_sec = 1200.0
 # How much flight time increases per km of range (multiplier)
-flight_time_range_factor = 0.25
+flight_time_range_factor = 0.11
 
 # Boost phase characteristics
 [boost]
 # Fraction of total flight time spent in powered boost phase (0.0-1.0)
-boost_phase_fraction = 0.15
+boost_phase_fraction = 0.1  # Short boost - first-strike SLBM launched close in
 # Velocity at end of boost phase (km/s)
-boost_velocity_km_s = 3.2
+boost_velocity_km_s = 6.8
 
 # Penetration aids and countermeasures
 [countermeasures]
 # Whether missile deploys decoys and chaff
-has_countermeasures = false
+has_countermeasures = true
 # Number of decoys deployed in standard configuration
-default_decoys = 0
+default_decoys = 4  # MK-4A penaids with chaff
 # Maximum number of decoys that can be deployed
-max_decoys = 2
+max_decoys = 8
+
+# Radar cross section by flight phase
+[radar_signature]
+# RCS during boost phase (dBsm) - large due to exhaust plume
+rcs_boost_dbsm = 5.0
+# RCS during midcourse flight (dBsm) - small reentry vehicle in space
+rcs_midcourse_dbsm = -5.0
+# RCS during terminal descent (dBsm) - smallest during terminal descent
+rcs_terminal_dbsm = -10.0

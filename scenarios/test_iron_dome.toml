@@ -1,51 +1,55 @@
 # Iron Dome Test Scenario
-# Isolated test of Iron Dome radar + Tamir interceptor against short-range rockets
-# Engagement envelope: 0.5-10km altitude, ~70km range
+# Isolated test of Iron Dome (EL/M-2084 radar + Tamir interceptor) vs Grad rockets
+# Tamir envelope: 0-10 km altitude, 70 km engagement range, 0.7 km/s max speed
+# Real 2006-war geometry: battery at Nahariya, launches from south Lebanon.
 
 [metadata]
 id = "test_iron_dome"
 name = "Iron Dome Test"
-description = "Iron Dome Battery vs short-range rockets (0.5-10km altitude)"
+description = "Iron Dome Battery vs Grad rockets (0-10km altitude, south Lebanon geometry)"
 region = "Middle East"
-center_lat = 31.5
-center_lon = 34.5
-zoom = 6.0
+center_lat = 33.2
+center_lon = 35.3
+zoom = 8.0
 
-# Single Iron Dome battery
+# Single Iron Dome battery at Nahariya - EL/M-2084 120-degree cone aimed
+# at the north (south Lebanon launch box spans bearings 26-68)
 [[defense_units]]
 name = "Iron Dome Test Battery"
 affiliation = "Friendly"
-lat = 31.5
-lon = 34.5
+lat = 33.01
+lon = 35.10
 type = "IronDome"
 interceptors = 80
+facing_deg = 45.0  # Threat box (Tyre/Nabatieh/Bint Jbeil) spans bearings 26-68
 
-# Short-range rocket - ~40km, very low apogee ~5km
+# Grad (BM-21 profile): apogee 5 + 0.08*range
+# ~32 km range -> ~7.6 km apogee (inside Tamir's 10 km ceiling)
 [[missiles]]
-name = "Rocket-1"
+name = "Grad #1"
 affiliation = "Hostile"
-origin_lat = 31.3
-origin_lon = 34.8
-target_lat = 31.5
-target_lon = 34.5
+origin_lat = 33.27
+origin_lon = 35.25
+target_lat = 33.01
+target_lon = 35.10
 launch_delay_sec = 5.0
 
-# Short-range rocket - ~60km, apogee ~8km
+# Grad: ~54 km range -> ~9.3 km apogee (at the top of the envelope)
 [[missiles]]
-name = "Rocket-2"
+name = "Grad #2"
 affiliation = "Hostile"
-origin_lat = 31.1
-origin_lon = 34.9
-target_lat = 31.5
-target_lon = 34.5
+origin_lat = 33.38
+origin_lon = 35.48
+target_lat = 33.01
+target_lon = 35.10
 launch_delay_sec = 10.0
 
-# Short-range rocket - ~30km, apogee ~4km
+# Grad: ~33 km range -> ~7.6 km apogee (Bint Jbeil axis)
 [[missiles]]
-name = "Rocket-3"
+name = "Grad #3"
 affiliation = "Hostile"
-origin_lat = 31.6
-origin_lon = 34.8
-target_lat = 31.5
-target_lon = 34.5
+origin_lat = 33.12
+origin_lon = 35.43
+target_lat = 33.01
+target_lon = 35.10
 launch_delay_sec = 15.0

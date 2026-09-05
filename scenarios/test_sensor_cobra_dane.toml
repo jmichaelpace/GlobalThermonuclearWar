@@ -1,6 +1,7 @@
 # Cobra Dane Radar Test Scenario
 # Shemya Island, Alaska - Early warning and tracking radar
-# Detection range: ~3000km, phased-array L-band radar
+# Cobra Dane config: 3000 km nominal detection (1.5x = 4500 km max), L-band,
+# 120-degree azimuth cone (phased array).
 
 [metadata]
 id = "test_sensor_cobra_dane"
@@ -11,17 +12,24 @@ center_lat = 52.7
 center_lon = 174.1
 zoom = 2.5
 
-# Cobra Dane radar (Shemya Island, Alaska)
+# Cobra Dane radar (Shemya Island, Alaska) - 120-degree cone aimed at the
+# NK launch region (NK launch sites span bearings 208-267 from Shemya; 240
+# centers the arc)
 [[radar_stations]]
 name = "Cobra Dane"
 affiliation = "Friendly"
 lat = 52.7
 lon = 174.1
 range_km = 3000.0
+sensor_config = "Cobra Dane"
+facing_deg = 240.0
 
-# Close range ICBM - ~800km from radar
+# Hwasong-15 profile (apogee 800 + 0.08*range) - NK->CONUS arcs.
+# Range ladder measures detection vs the 3000 km nominal / 4500 km max.
+
+# Close range ICBM - boost arc ~800 km from radar (Kamchatka axis)
 [[missiles]]
-name = "ICBM Close"
+name = "Hwasong-15 #Close"
 affiliation = "Hostile"
 origin_lat = 45.0
 origin_lon = 168.0
@@ -29,9 +37,9 @@ target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 15.0
 
-# Near range ICBM - ~1500km from radar
+# Near range ICBM - NK->NYC arc passes ~1,500 km from radar
 [[missiles]]
-name = "ICBM Near"
+name = "Hwasong-15 #Near"
 affiliation = "Hostile"
 origin_lat = 40.0
 origin_lon = 125.0
@@ -39,9 +47,9 @@ target_lat = 40.7
 target_lon = -74.0
 launch_delay_sec = 30.0
 
-# Mid range ICBM - ~2000km from radar
+# Mid range ICBM - NK->LA arc passes ~2,000 km from radar
 [[missiles]]
-name = "ICBM Mid"
+name = "Hwasong-15 #Mid"
 affiliation = "Hostile"
 origin_lat = 42.0
 origin_lon = 130.0
@@ -49,9 +57,9 @@ target_lat = 34.0
 target_lon = -118.2
 launch_delay_sec = 45.0
 
-# Far range ICBM - ~2800km from radar (near limit)
+# Far range ICBM - NK->Seattle arc passes ~2,800 km from radar (near limit)
 [[missiles]]
-name = "ICBM Far"
+name = "Hwasong-15 #Far"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 127.0
@@ -59,9 +67,9 @@ target_lat = 47.6
 target_lon = -122.3
 launch_delay_sec = 60.0
 
-# Beyond detection range - ~3500km
+# Beyond detection range - arc passes ~3,500 km from radar
 [[missiles]]
-name = "ICBM Beyond"
+name = "Hwasong-15 #Beyond"
 affiliation = "Hostile"
 origin_lat = 30.0
 origin_lon = 120.0

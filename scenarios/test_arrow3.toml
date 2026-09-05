@@ -1,17 +1,21 @@
 # Arrow 3 Test Scenario
-# Isolated test of Arrow 3 + Green Pine/Super Green Pine radar against MRBM/IRBM
-# Engagement envelope: 20-400km altitude, ~400km range
+# Isolated test of Arrow 3 + Green Pine radar against MRBM/IRBM-class threats
+# Arrow 3 envelope: 100-1000 km altitude (exo-atmospheric), ~2,400 km flyout
+# range, ~3.0 km/s. Arrow 3 intercepts its targets IN SPACE - it complements
+# Arrow 2, which engages targets in the upper atmosphere.
+# https://missilethreat.csis.org/defsys/arrow-3/
+# All missiles use config-backed profiles; Iranian-launch-axis geometry.
 
 [metadata]
 id = "test_arrow3"
 name = "Arrow 3 Test"
-description = "Arrow 3 Battery vs MRBM/IRBM (20-400km altitude envelope)"
+description = "Arrow 3 Battery vs Shahab-3/Sejjil/RS-26 (exo-atmospheric, 100-1000km envelope)"
 region = "Middle East"
 center_lat = 31.0
 center_lon = 35.0
 zoom = 4.0
 
-# Single Arrow 3 battery
+# Single Arrow 3 battery - Green Pine 120-degree cone aimed at Iran (bearing 67)
 [[defense_units]]
 name = "Arrow 3 Test Battery"
 affiliation = "Friendly"
@@ -19,10 +23,13 @@ lat = 31.0
 lon = 35.0
 type = "Arrow3"
 interceptors = 24
+facing_deg = 67.0  # Iran launch axis (bearing 67 from central Israel)
 
-# MRBM - ~1000km range, apogee ~100km (low end of envelope)
+# Shahab-3: apogee 150 + 0.18*range
+# ~1,608 km range -> ~439 km apogee - INSIDE Arrow 3's 100-1000 km envelope
+# through the whole upper arc: exo-atmospheric midcourse engagement
 [[missiles]]
-name = "MRBM-1"
+name = "Shahab-3 #1"
 affiliation = "Hostile"
 origin_lat = 35.7
 origin_lon = 51.4
@@ -30,9 +37,9 @@ target_lat = 31.0
 target_lon = 35.0
 launch_delay_sec = 10.0
 
-# MRBM - ~2000km range, apogee ~200km (mid envelope)
+# Shahab-3: ~1,940 km range -> ~499 km apogee - exo engagement
 [[missiles]]
-name = "MRBM-2"
+name = "Shahab-3 #2"
 affiliation = "Hostile"
 origin_lat = 35.7
 origin_lon = 51.4
@@ -40,9 +47,10 @@ target_lat = 24.0
 target_lon = 35.0
 launch_delay_sec = 25.0
 
-# IRBM - ~3500km range, apogee ~350km (high end of envelope)
+# RS-26: apogee 300 + 0.12*range
+# ~3,290 km range -> ~695 km apogee - upper-envelope exo engagement
 [[missiles]]
-name = "IRBM-1"
+name = "RS-26 Rubezh #1"
 affiliation = "Hostile"
 origin_lat = 35.7
 origin_lon = 51.4

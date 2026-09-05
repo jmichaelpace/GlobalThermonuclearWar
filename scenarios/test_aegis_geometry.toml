@@ -1,6 +1,7 @@
 # AEGIS Geometry Test Scenario
 # Tests intercept guidance at various engagement angles
-# Platform at (35.0, 140.0)
+# Platform at (35.0, 140.0) - SPY-1D is 360-degree coverage, no facing needed
+# Missiles use config-backed profiles (" #N" suffix resolves to the base config).
 
 [metadata]
 id = "test_aegis_geometry"
@@ -23,10 +24,11 @@ interceptors = 48
 # ============================================================================
 # HEAD-ON ENGAGEMENT (missile targeting the platform)
 # Interceptor flies toward incoming missile - optimal geometry
+# Shahab-3 profile: ~1,365 km range -> ~395 km apogee
 # ============================================================================
 
 [[missiles]]
-name = "HEAD-ON"
+name = "Shahab-3 #HEAD-ON"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 155.0
@@ -37,10 +39,12 @@ launch_delay_sec = 10.0
 # ============================================================================
 # CROSSING ENGAGEMENT (missile passing by the platform)
 # Interceptor must lead the target significantly
+# Shahab-3 profile: ~3,070 km range -> ~702 km apogee; crossing geometry
+# legitimately misses (gimbal-limited terminal homing) - that is the test
 # ============================================================================
 
 [[missiles]]
-name = "CROSSING"
+name = "Shahab-3 #CROSSING"
 affiliation = "Hostile"
 origin_lat = 33.0
 origin_lon = 155.0
@@ -51,10 +55,11 @@ launch_delay_sec = 20.0
 # ============================================================================
 # OBLIQUE ENGAGEMENT (45-degree type angle)
 # Mixed geometry - some lead required
+# Shahab-3 profile: ~1,300 km range -> ~384 km apogee
 # ============================================================================
 
 [[missiles]]
-name = "OBLIQUE"
+name = "Shahab-3 #OBLIQUE"
 affiliation = "Hostile"
 origin_lat = 42.0
 origin_lon = 152.0

@@ -124,6 +124,7 @@ impl ScenarioDraft {
             lon: pos.lon,
             defense_type: defense_type.to_string(),
             interceptors: default_interceptors_for(defense_type),
+            facing_deg: None,
         });
         self.file.defense_units.len() - 1
     }
@@ -402,6 +403,14 @@ impl ScenarioDraft {
                         cfg.to_lowercase().replace([' ', '-'], "_")
                     ));
                 }
+            } else {
+                // Without an explicit sensor_config, the engine derives the
+                // config from the station's display name - which usually
+                // misses and silently falls back to the 200 km Generic Radar.
+                warnings.push(format!(
+                    "{what}: no sensor_config set - name-derived lookup usually falls back \
+                     to the Generic Radar (add sensor_config = \"...\")"
+                ));
             }
         }
 
@@ -576,14 +585,57 @@ fn default_interceptors_for(defense_type: &str) -> u32 {
     }
 }
 
-/// Check that a sensor_config name has a matching config/sensors file.
-/// Mirrors the naming convention used by the engine when no config is given
-/// (lowercase, spaces/dashes to underscores).
+/// Check that a sensor_config name resolves to a real sensor, the same way
+/// `SensorConfigRegistry::get_by_name` resolves it: either by normalized
+/// `system.name` (e.g. "AN/TPY-2" -> tpy_2.toml's name field) or by
+/// normalized file stem (e.g. "tpy_2"). Both are accepted because the
+/// registry keys configs by `system.name` while hand-written scenarios
+/// conventionally reference file stems.
 fn sensor_config_exists(name: &str) -> bool {
-    let normalized = name.to_lowercase().replace([' ', '-'], "_");
-    PathBuf::from("config/sensors")
-        .join(format!("{normalized}.toml"))
-        .exists()
+    use std::sync::OnceLock;
+
+    /// Lazily-built index of every resolvable sensor config name (normalized
+    /// file stems + normalized system.name values).
+    static SENSOR_NAMES: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    let names = SENSOR_NAMES.get_or_init(|| {
+        let mut set = std::collections::HashSet::new();
+        let dir = PathBuf::from("config").join("sensors");
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                    continue;
+                }
+                // File stem (without extension), normalized
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    set.insert(normalize_sensor_name(stem));
+                }
+                // system.name inside the file, normalized - this is what the
+                // registry actually keys on
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(cfg) = toml::from_str::<toml::Value>(&text) {
+                        if let Some(sys_name) = cfg
+                            .get("system")
+                            .and_then(|s| s.get("name"))
+                            .and_then(|n| n.as_str())
+                        {
+                            set.insert(normalize_sensor_name(sys_name));
+                        }
+                    }
+                }
+            }
+        }
+        set
+    });
+
+    names.contains(&normalize_sensor_name(name))
+}
+
+/// Normalize a sensor name for lookup - mirrors
+/// `SensorConfigRegistry::normalize_name` (lowercase, spaces/hyphens/slashes
+/// to underscores).
+fn normalize_sensor_name(name: &str) -> String {
+    name.to_lowercase().replace([' ', '-', '/'], "_")
 }
 
 #[cfg(test)]
@@ -636,6 +688,7 @@ mod tests {
             lon: 0.0,
             defense_type: "thaad".into(), // wrong case
             interceptors: 8,
+            facing_deg: None,
         });
         let (errors, _) = draft.validate();
         assert!(
@@ -651,6 +704,7 @@ mod tests {
             lon: 0.0,
             defense_type: "THAAD".into(),
             interceptors: 8,
+            facing_deg: None,
         });
         let (errors, _) = draft.validate();
         assert!(
@@ -722,5 +776,50 @@ mod tests {
         draft.add_missile(origin, origin); // same-point error
         assert!(draft.to_toml().is_err());
         assert!(draft.save().is_err());
+    }
+
+    #[test]
+    fn test_sensor_config_resolution_matches_registry() {
+        // Resolvable by system.name (the registry's actual key) - these were
+        // false warnings before: the engine resolved them fine but the old
+        // filename-only check rejected them.
+        assert!(sensor_config_exists("AN/TPY-2"));
+        assert!(sensor_config_exists("AN/SPY-1D"));
+        assert!(sensor_config_exists("SBX-1"));
+        assert!(sensor_config_exists("Cobra Dane"));
+        assert!(sensor_config_exists("Green Pine"));
+        assert!(sensor_config_exists("Don-2N"));
+        assert!(sensor_config_exists("PAVE PAWS"));
+        assert!(sensor_config_exists("Fylingdales"));
+        assert!(sensor_config_exists("Thule"));
+        // Resolvable by file stem
+        assert!(sensor_config_exists("tpy_2"));
+        assert!(sensor_config_exists("don_2n"));
+        // Case/space normalization
+        assert!(sensor_config_exists("an tpy-2"));
+        // Not resolvable
+        assert!(!sensor_config_exists("AN/TPY-2 Forward"));
+        assert!(!sensor_config_exists("no such radar"));
+    }
+
+    #[test]
+    fn test_validation_warns_on_missing_sensor_config() {
+        let mut draft = ScenarioDraft::new();
+        draft.add_radar_station(GeoCoord::new(37.5, -122.0));
+
+        let (errors, warnings) = draft.validate();
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("no sensor_config set")),
+            "expected missing-sensor_config warning, got: {warnings:?}"
+        );
+
+        // Setting a resolvable config clears the warning
+        draft.file.radar_stations[0].sensor_config = Some("Cobra Dane".into());
+        let (_, warnings) = draft.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("no sensor_config set")),
+            "warning should clear once sensor_config is set: {warnings:?}"
+        );
     }
 }

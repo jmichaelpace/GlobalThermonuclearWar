@@ -1,17 +1,19 @@
 # THAAD Test Scenario
-# Isolated test of THAAD + TPY-2 radar against SRBM/MRBM
-# Engagement envelope: 40-150km altitude, ~200km range
+# Isolated test of THAAD + TPY-2 radar against SRBM/MRBM-class threats
+# Interceptor envelope: 40-150 km altitude, 200 km engagement range
+# All missiles use config-backed profiles; engagements occur on the
+# descent leg through the 40-150 km band.
 
 [metadata]
 id = "test_thaad"
 name = "THAAD Test"
-description = "THAAD Battery vs SRBM/MRBM (40-150km altitude envelope)"
+description = "THAAD Battery vs Burkan-2/Shahab-3 (descent through 40-150km envelope)"
 region = "Pacific"
 center_lat = 37.5
 center_lon = -122.0
 zoom = 4.0
 
-# Single THAAD battery
+# Single THAAD battery - TPY-2 120-degree cone aimed at the western launch box
 [[defense_units]]
 name = "THAAD Test Battery"
 affiliation = "Friendly"
@@ -19,10 +21,12 @@ lat = 37.5
 lon = -122.0
 type = "THAAD"
 interceptors = 48
+facing_deg = 285.0  # Threat box spans bearings 272-303 (W to NW)
 
-# SRBM - Short range, ~500km, apogee ~80km (within envelope)
+# Burkan-2 (flat Scud arc): apogee 80 + 0.08*range
+# ~441 km range -> ~115 km apogee (mid envelope, direct overflight)
 [[missiles]]
-name = "SRBM-1"
+name = "Burkan-2 #1"
 affiliation = "Hostile"
 origin_lat = 37.5
 origin_lon = -127.0
@@ -30,9 +34,9 @@ target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 10.0
 
-# SRBM - Closer range, ~300km, apogee ~60km (within envelope)
+# Burkan-2: ~310 km range -> ~105 km apogee (mid envelope)
 [[missiles]]
-name = "SRBM-2"
+name = "Burkan-2 #2"
 affiliation = "Hostile"
 origin_lat = 39.0
 origin_lon = -125.0
@@ -40,9 +44,11 @@ target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 20.0
 
-# MRBM - Medium range, ~1500km, apogee ~150km (at top of envelope)
+# Shahab-3: apogee 150 + 0.18*range
+# ~1,146 km range -> ~356 km apogee - above THAAD's ceiling at apogee;
+# engages only during terminal descent through 150-40 km
 [[missiles]]
-name = "MRBM-1"
+name = "Shahab-3 #1"
 affiliation = "Hostile"
 origin_lat = 37.5
 origin_lon = -135.0

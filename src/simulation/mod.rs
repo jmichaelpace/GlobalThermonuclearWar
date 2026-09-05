@@ -7,7 +7,10 @@ pub mod kalman;
 pub mod physics;
 pub mod runner;
 
-pub use config::{PlatformConfig, PlatformConfigRegistry, SensorConfig, SensorConfigRegistry};
+pub use config::{
+    InterceptorConfigRegistry, MissileConfigRegistry, PlatformConfig, PlatformConfigRegistry,
+    SensorConfig, SensorConfigRegistry,
+};
 pub use detection::{
     calculate_position_from_bearing_range, FusedTrack, SensorKind, VelocityEstimate,
 };

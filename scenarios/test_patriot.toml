@@ -1,17 +1,20 @@
 # Patriot PAC-3 Test Scenario
-# Isolated test of Patriot + MPQ-53/65 radar against SRBM terminal phase
-# Engagement envelope: 0.5-40km altitude, ~70km range
+# Isolated test of Patriot + MPQ-65 radar against SRBM terminal phase
+# PAC-3 MSE envelope: 0.5-40 km altitude, 70 km engagement range
+# All missiles use the Iskander-M profile (quasi-ballistic SRBM, 2 decoys,
+# very low terminal RCS - a hard but realistic Patriot target).
 
 [metadata]
 id = "test_patriot"
 name = "Patriot Test"
-description = "Patriot Battery vs SRBM terminal phase (0.5-40km altitude)"
+description = "Patriot Battery vs Iskander-M terminal phase (0.5-40km altitude)"
 region = "Middle East"
 center_lat = 31.5
-center_lon = 34.8
-zoom = 5.0
+center_lon = 35.3
+zoom = 6.0
 
-# Single Patriot battery
+# Single Patriot battery - MPQ-65 120-degree cone aimed at the eastern
+# launch box (all threat bearings fall in the SE quadrant)
 [[defense_units]]
 name = "Patriot Test Battery"
 affiliation = "Friendly"
@@ -19,10 +22,13 @@ lat = 31.5
 lon = 34.8
 type = "Patriot"
 interceptors = 64
+facing_deg = 95.0  # Launch box spans bearings 44-130 (NE to SE)
 
-# SRBM - Short range ~150km, low apogee ~30km (terminal phase engagement)
+# Iskander-M: apogee 50 + 0.1*range
+# ~126 km range -> ~63 km apogee - above PAC-3's 40 km ceiling at apogee;
+# engagement happens in terminal phase below 40 km (realistic PAC-3 shot)
 [[missiles]]
-name = "SRBM-1"
+name = "Iskander-M #1"
 affiliation = "Hostile"
 origin_lat = 32.0
 origin_lon = 36.0
@@ -30,9 +36,9 @@ target_lat = 31.5
 target_lon = 34.8
 launch_delay_sec = 10.0
 
-# SRBM - Short range ~200km, apogee ~40km (at envelope limit)
+# Iskander-M: ~231 km range -> ~73 km apogee - terminal-phase engagement
 [[missiles]]
-name = "SRBM-2"
+name = "Iskander-M #2"
 affiliation = "Hostile"
 origin_lat = 33.0
 origin_lon = 36.5
@@ -40,12 +46,12 @@ target_lat = 31.5
 target_lon = 34.8
 launch_delay_sec = 20.0
 
-# SRBM - Very short range ~100km, apogee ~20km (well within envelope)
+# Iskander-M: ~87 km range -> ~59 km apogee - short shot, terminal engagement
 [[missiles]]
-name = "SRBM-3"
+name = "Iskander-M #3"
 affiliation = "Hostile"
-origin_lat = 31.0
-origin_lon = 35.5
+origin_lat = 31.6
+origin_lon = 35.9
 target_lat = 31.5
 target_lon = 34.8
 launch_delay_sec = 30.0

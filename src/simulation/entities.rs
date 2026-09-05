@@ -620,9 +620,12 @@ impl InterceptorKinematics {
             DefenseType::Arrow3 => Self {
                 boost_duration_sec: 25.0,
                 boost_acceleration_g: 12.0,
-                max_velocity_km_s: 2.5,
+                // ~3.0 km/s class (exo-atmospheric KV with large divert);
+                // envelope 100-1000 km per config/interceptors/arrow3.toml
+                // https://missilethreat.csis.org/defsys/arrow-3/
+                max_velocity_km_s: 3.0,
                 terminal_maneuver_g: 20.0,
-                burnout_altitude_km: 50.0,
+                burnout_altitude_km: 100.0,
             },
             // THAAD - single stage solid rocket
             DefenseType::THAAD => Self {
@@ -644,9 +647,11 @@ impl InterceptorKinematics {
             DefenseType::DavidsSling => Self {
                 boost_duration_sec: 10.0,
                 boost_acceleration_g: 15.0,
-                max_velocity_km_s: 2.0,
+                // Mach 7.5 (~2.55 km/s) per config/interceptors/stunner.toml
+                // https://missilethreat.csis.org/defsys/davids-sling/
+                max_velocity_km_s: 2.55,
                 terminal_maneuver_g: 40.0,
-                burnout_altitude_km: 20.0,
+                burnout_altitude_km: 10.0,
             },
             // S-400 40N6 missile
             DefenseType::S400 => Self {

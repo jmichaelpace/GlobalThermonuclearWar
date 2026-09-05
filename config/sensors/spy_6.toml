@@ -10,7 +10,10 @@ country = "USA"
 # Detection and coverage parameters
 [detection]
 # Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
-detection_range_km = 650.0  # Significantly improved over SPY-1
+# SPY-6(V)1 provides SPY-1 +15 dB sensitivity - "half the size at twice the
+# distance" (Raytheon, via CSIS) - i.e. ~2x SPY-1's nominal 500 km against an
+# equal-RCS target. https://missilethreat.csis.org/defsys/amdr/
+detection_range_km = 1000.0
 # Horizontal field of view (degrees) - how wide the radar can scan
 azimuth_coverage_deg = 360.0
 # Minimum elevation angle radar can scan (degrees above horizon)

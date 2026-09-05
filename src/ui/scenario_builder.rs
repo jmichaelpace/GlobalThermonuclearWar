@@ -501,6 +501,14 @@ impl ScenarioBuilder {
                             &crate::scenario::builder::DEFENSE_TYPES,
                         );
                         changed |= u32_field(ui, "Interceptors:", &mut u.interceptors, 0, 500);
+                        // Emplacement orientation: aims narrow-azimuth fire
+                        // control radars at the threat axis (no effect on
+                        // 360-degree sensors).
+                        let mut facing = u.facing_deg.unwrap_or(0.0);
+                        if f64_field(ui, "Facing deg:", &mut facing, 0.0, 360.0) {
+                            u.facing_deg = Some(facing);
+                            changed = true;
+                        }
                     }
                     DraftCategory::RadarStation(i) => {
                         let Some(r) = self.draft.file.radar_stations.get_mut(i) else {

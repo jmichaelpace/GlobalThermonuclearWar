@@ -18,6 +18,7 @@ lat = 37.5
 lon = -122.0
 type = "THAAD"
 interceptors = 48
+facing_deg = 285.0  # Threat axis: Pacific SRBM launch boxes (W) and NK ICBM approach (WNW)
 
 [[defense_units]]
 name = "Aegis Sea of Japan"
@@ -26,6 +27,7 @@ lat = 38.0
 lon = 132.0
 type = "Aegis"
 interceptors = 96
+# SPY-1 is 360-degree coverage - no facing needed
 
 [[defense_units]]
 name = "GBI Alaska"
@@ -34,14 +36,17 @@ lat = 64.0
 lon = -146.0
 type = "GBI"
 interceptors = 44
+facing_deg = 288.0  # Platform radar (Cobra Dane, 120-degree cone) aimed at NK bearing
 
-# Early Warning
+# Early Warning - PAVE PAWS at Clear Space Force Station, Alaska
 [[radar_stations]]
-name = "Early Warning Alaska"
+name = "PAVE PAWS Clear"
 affiliation = "Friendly"
-lat = 71.0
-lon = -156.0
-range_km = 2000.0
+lat = 64.3
+lon = -149.1
+range_km = 3000.0
+sensor_config = "PAVE PAWS"
+facing_deg = 286.0  # 240-degree coverage aimed at NK (bearing 286) and Iran polar tracks
 
 # Satellites
 [[satellites]]
@@ -53,39 +58,45 @@ altitude_km = 35786.0
 sensor_type = "Infrared"
 
 # Missiles - Mix of types for demonstration
+# All names reference config/missiles/ profiles (" #N" suffixes are stripped
+# by the config lookup, so "#1" variants resolve to the base profile).
 
-# ICBMs - High apogee, long range
+# ICBMs - Hwasong-15 profile: apogee 800 + 0.08*range
 [[missiles]]
-name = "ICBM Demo 1"
+name = "Hwasong-15 #1"
 affiliation = "Hostile"
 origin_lat = 39.0
 origin_lon = 125.5
 target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 60.0
+# ~9,070 km range, ~1,525 km apogee - GBI midcourse engagement
 
 [[missiles]]
-name = "ICBM Demo 2"
+name = "Hwasong-15 #2"
 affiliation = "Hostile"
 origin_lat = 39.0
 origin_lon = 125.5
 target_lat = 47.6
 target_lon = -122.3
 launch_delay_sec = 120.0
+# ~8,290 km range, ~1,460 km apogee - GBI midcourse engagement
 
-# MRBM - Medium range
+# MRBM - Shahab-3 profile: apogee 150 + 0.18*range
 [[missiles]]
-name = "MRBM Demo"
+name = "Shahab-3 #1"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 51.0
 target_lat = 32.0
 target_lon = 34.8
 launch_delay_sec = 30.0
+# ~1,585 km range, ~435 km apogee - Israel-bound (no Israeli defense in demo)
 
-# SRBMs - Short range, lower apogee (within THAAD envelope for salvo fire demonstration)
+# SRBMs - Burkan-2 profile (flat Scud arc): apogee 80 + 0.08*range
+# ~880-950 km range, ~150-155 km apogee - descends through THAAD's 40-150 km envelope
 [[missiles]]
-name = "SRBM Test 1"
+name = "Burkan-2 #1"
 affiliation = "Hostile"
 origin_lat = 37.5
 origin_lon = -132.0
@@ -94,7 +105,7 @@ target_lon = -122.0
 launch_delay_sec = 15.0
 
 [[missiles]]
-name = "SRBM Test 2"
+name = "Burkan-2 #2"
 affiliation = "Hostile"
 origin_lat = 38.0
 origin_lon = -132.5

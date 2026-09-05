@@ -18,6 +18,7 @@ lat = 53.8
 lon = 21.1
 type = "Aegis"
 interceptors = 24
+facing_deg = 339.0  # SPY-1 is 360-degree, but aim anyway for coherence; Kaliningrad at bearing 339
 
 [[defense_units]]
 name = "Patriot Battery Poland"
@@ -26,8 +27,9 @@ lat = 52.2
 lon = 21.0
 type = "Patriot"
 interceptors = 64
+facing_deg = 353.0  # MPQ-65 aimed at Kaliningrad (bearing 353); Moscow RS-26s come in at bearing 63 - edge of the 120-degree cone
 
-# Romania
+# Romania - aimed at the Moscow axis (bearing ~30)
 [[defense_units]]
 name = "Aegis Ashore Romania"
 affiliation = "Friendly"
@@ -35,6 +37,7 @@ lat = 43.9
 lon = 24.0
 type = "Aegis"
 interceptors = 24
+facing_deg = 31.0  # Aimed at Moscow (SPY-1 is 360-degree anyway)
 
 [[defense_units]]
 name = "Patriot Battery Romania"
@@ -43,8 +46,9 @@ lat = 44.4
 lon = 26.1
 type = "Patriot"
 interceptors = 64
+facing_deg = 29.0  # MPQ-65 aimed at the Moscow axis (bearing 29)
 
-# Germany
+# Germany - aimed at the Moscow axis (bearing ~61)
 [[defense_units]]
 name = "Patriot Battery Germany"
 affiliation = "Friendly"
@@ -52,8 +56,9 @@ lat = 50.1
 lon = 8.7
 type = "Patriot"
 interceptors = 64
+facing_deg = 61.0  # MPQ-65 aimed at Moscow (bearing 61)
 
-# UK Naval
+# UK Naval - SPY-1 is 360-degree coverage, no facing needed
 [[defense_units]]
 name = "HMS Duncan (Type 45)"
 affiliation = "Friendly"
@@ -69,6 +74,8 @@ affiliation = "Friendly"
 lat = 54.4
 lon = -0.7
 range_km = 3000.0
+sensor_config = "Fylingdales"
+# 360-degree (three-face) coverage - no facing needed
 
 [[radar_stations]]
 name = "Thule"
@@ -76,8 +83,11 @@ affiliation = "Friendly"
 lat = 76.5
 lon = -68.7
 range_km = 3000.0
+sensor_config = "Thule"
+facing_deg = 57.0  # 240-degree (two-face) coverage aimed at Russia (Moscow bearing 57)
 
-# Russian Missiles
+# Russian Missiles - config-backed profiles
+# Iskander-M (SS-26 Stone): quasi-ballistic, apogee 50 + 0.1*range (~78 km at 280 km), 2 decoys, very low RCS
 [[missiles]]
 name = "Iskander-M #1"
 affiliation = "Hostile"
@@ -96,8 +106,11 @@ target_lat = 54.7
 target_lon = 25.3
 launch_delay_sec = 40.0
 
+# RS-26 Rubezh: IRBM profile, apogee 300 + 0.12*range (~490 km at 1,580 km), 3 decoys
+# (SS-26 and Iskander-M are the same missile - these longer shots use the
+# RS-26 profile that matches their 1,500-2,000 km range)
 [[missiles]]
-name = "SS-26 #1"
+name = "RS-26 Rubezh #1"
 affiliation = "Hostile"
 origin_lat = 55.8
 origin_lon = 37.6
@@ -106,7 +119,7 @@ target_lon = 8.7
 launch_delay_sec = 60.0
 
 [[missiles]]
-name = "SS-26 #2"
+name = "RS-26 Rubezh #2"
 affiliation = "Hostile"
 origin_lat = 55.8
 origin_lon = 37.6

@@ -10,6 +10,10 @@ country = "USA"
 # Detection and coverage parameters
 [detection]
 # Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
+# Note: SPY-1 provides interceptor track quality to ~370 km vs missile-warhead-
+# class targets (Lewis/Postol estimate, cited by CSIS) - well below the SM-3
+# IIA's 2,500 km flyout, so real engagements lean on offboard cueing.
+# https://missilethreat.csis.org/defsys/an-spy-1-radar/
 detection_range_km = 500.0
 # Horizontal field of view (degrees) - how wide the radar can scan
 azimuth_coverage_deg = 360.0

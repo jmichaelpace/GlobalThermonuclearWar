@@ -10,7 +10,7 @@ center_lat = 30.0
 center_lon = 45.0
 zoom = 4.0
 
-# Israeli Defense
+# Israeli Defense - all layers aimed at the Iran axis (bearing ~70 from Israel)
 [[defense_units]]
 name = "Iron Dome - Tel Aviv"
 affiliation = "Friendly"
@@ -18,6 +18,7 @@ lat = 32.0
 lon = 34.8
 type = "IronDome"
 interceptors = 100
+facing_deg = 70.0  # EL/M-2084 120-degree cone aimed at Iran (bearing 70) and western Iraq (74)
 
 [[defense_units]]
 name = "Arrow 3 Battery"
@@ -26,6 +27,9 @@ lat = 31.5
 lon = 34.5
 type = "Arrow3"
 interceptors = 24
+# Exo-atmospheric interceptor (100-1000 km envelope, ~2,400 km flyout)
+# https://missilethreat.csis.org/defsys/arrow-3/
+facing_deg = 69.0  # Green Pine 120-degree cone aimed at Iran
 
 [[defense_units]]
 name = "David's Sling"
@@ -34,8 +38,9 @@ lat = 32.8
 lon = 35.0
 type = "DavidsSling"
 interceptors = 48
+facing_deg = 73.0  # EL/M-2084 120-degree cone aimed at Iran
 
-# Saudi Defense
+# Saudi Defense - aimed at Iran (bearing ~20 from Riyadh)
 [[defense_units]]
 name = "Patriot - Riyadh"
 affiliation = "Friendly"
@@ -43,6 +48,7 @@ lat = 24.7
 lon = 46.7
 type = "Patriot"
 interceptors = 64
+facing_deg = 19.0  # MPQ-65 120-degree cone aimed at Iran (bearing 19)
 
 [[defense_units]]
 name = "THAAD - Riyadh"
@@ -51,6 +57,7 @@ lat = 24.9
 lon = 46.5
 type = "THAAD"
 interceptors = 48
+facing_deg = 20.0  # TPY-2 120-degree cone aimed at Iran
 
 [[defense_units]]
 name = "THAAD - UAE"
@@ -59,8 +66,9 @@ lat = 24.5
 lon = 54.5
 type = "THAAD"
 interceptors = 48
+facing_deg = 350.0  # TPY-2 aimed at the Iranian coast (bearing 350 from UAE)
 
-# US Naval Support
+# US Naval Support - SPY-1 is 360-degree coverage, no facing needed
 [[defense_units]]
 name = "USS Carney (Aegis)"
 affiliation = "Friendly"
@@ -77,9 +85,10 @@ lat = 30.5
 lon = 34.9
 range_km = 1000.0
 sensor_config = "AN/TPY-2"
-facing_deg = 45.0  # Northeast - toward Iran
+facing_deg = 65.0  # 120-degree cone aimed at Iran (bearing 65 from central Israel)
 
-# Iranian Missiles
+# Iranian Missiles - config-backed profiles
+# Shahab-3: apogee 150 + 0.18*range (apogee ~430 km at 1,585 km range)
 [[missiles]]
 name = "Shahab-3 #1"
 affiliation = "Hostile"
@@ -98,6 +107,7 @@ target_lat = 32.0
 target_lon = 34.8
 launch_delay_sec = 40.0
 
+# Emad: apogee 200 + 0.15*range (apogee ~400 km at 1,300 km range), 1 decoy
 [[missiles]]
 name = "Emad #1"
 affiliation = "Hostile"
@@ -107,6 +117,7 @@ target_lat = 24.7
 target_lon = 46.7
 launch_delay_sec = 60.0
 
+# Sejjil: apogee 250 + 0.16*range (apogee ~460 km at 1,300 km range), 1 decoy
 [[missiles]]
 name = "Sejjil #1"
 affiliation = "Hostile"

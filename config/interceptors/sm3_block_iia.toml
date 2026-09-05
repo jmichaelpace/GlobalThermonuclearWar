@@ -10,7 +10,10 @@ country = "USA"
 # Altitude constraints for engagement
 [altitude_envelope]
 # Minimum altitude where intercepts can occur (km) - below this, out of envelope
-min_engagement_altitude_km = 80.0
+# SM-3 destroys incoming warheads during midcourse "outside the atmosphere";
+# 100 km is the accepted exo-atmospheric boundary.
+# https://missilethreat.csis.org/defsys/sm-3/
+min_engagement_altitude_km = 100.0
 # Maximum altitude where intercepts can occur (km) - above this, out of envelope
 max_engagement_altitude_km = 600.0
 

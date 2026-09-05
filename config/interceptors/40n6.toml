@@ -1,7 +1,10 @@
 # System identification and description
 [system]
 # Official interceptor designation
-name = "48N6E3"
+# The S-400 platform (config/platform/s400.toml) requests interceptor_type
+# = "40N6" and the registry keys on system.name - these must match or every
+# S-400 unit silently falls back to the Generic Interceptor config.
+name = "40N6"
 # Full system name and role
 description = "S-400 long-range surface-to-air missile"
 # Operating country/nation
@@ -36,7 +39,10 @@ hit_probability = 0.75
 # Weight factor for terminal homing accuracy (0.0-1.0, higher = better terminal guidance)
 terminal_blend_factor = 0.50
 # Guidance type: active (onboard radar), semi_active (requires illumination), or command
-guidance_type = "semi_active"  # 40N6 requires continuous radar illumination
+# 40N6 carries an active radar seeker for its terminal phase - required for
+# its 400 km shots, which exceed the illumination radar's radar horizon.
+# https://en.wikipedia.org/wiki/S-400_missile_system
+guidance_type = "active"
 
 # Mid-course guidance - 40N6 uses command guidance with datalink updates
 [engagement.midcourse_guidance]

@@ -1,60 +1,77 @@
 # Sea-Based X-band (SBX) Radar Test Scenario
-# Tests long-range discrimination and tracking of ICBM targets
-# Detection range: ~1000-2000km, optimized for midcourse phase
+# Tests the SBX's narrow-field-of-view ("soda straw") discrimination role.
+# SBX-1 config: 4000 km nominal detection, X-band, 25-degree azimuth arc
+# (phased array). Per CSIS, SBX "has a limited ability to track an incoming
+# missile and relies on other sensors to provide the target's location" -
+# this scenario models exactly that: PAVE PAWS provides the wide-area cue,
+# SBX discriminates what passes through its narrow arc.
+# https://missilethreat.csis.org/defsys/sbx/
 
 [metadata]
 id = "test_sensor_sbx"
 name = "SBX Radar Test"
-description = "Sea-Based X-band radar discrimination and tracking test"
+description = "Sea-Based X-band narrow-arc discrimination test (cued by PAVE PAWS)"
 region = "Pacific"
 center_lat = 55.0
 center_lon = -165.0
 zoom = 3.0
 
-# SBX radar platform (mobile, positioned in Pacific)
+# SBX radar platform (mobile, positioned in Pacific) - 25-degree arc aimed
+# north (bearing 10) at the midcourse arcs transiting the Bering region.
+# Threat geometry (closest-approach bearings from the radar):
+#   - IN-BEAM arcs: RS-26 #In-Beam (brg 5.8), Hwasong-15 #In-Beam (brg 7.5)
+#   - OFF-BEAM arc: Hwasong-15 #Off-Beam (brg 346.7 - 23 deg off boresight)
 [[radar_stations]]
 name = "SBX-1"
 affiliation = "Friendly"
 lat = 55.0
 lon = -165.0
-range_km = 2000.0
+range_km = 4000.0
+sensor_config = "SBX-1"
+facing_deg = 10.0
 
-# Near range ICBM - ~1000km from radar, apogee ~800km
-[[missiles]]
-name = "ICBM Near"
-affiliation = "Hostile"
-origin_lat = 40.0
-origin_lon = 125.0
-target_lat = 37.5
-target_lon = -122.0
-launch_delay_sec = 20.0
+# Wide-area cueing sensor: PAVE PAWS provides the track that SBX's narrow
+# arc cannot self-generate (realistic "soda straw" employment)
+[[radar_stations]]
+name = "PAVE PAWS Cueing"
+affiliation = "Friendly"
+lat = 39.1
+lon = -121.4
+range_km = 3000.0
+sensor_config = "PAVE PAWS"
+facing_deg = 280.0
 
-# Mid range ICBM - ~1500km from radar, apogee ~1000km
-[[missiles]]
-name = "ICBM Mid"
-affiliation = "Hostile"
-origin_lat = 42.0
-origin_lon = 130.0
-target_lat = 40.7
-target_lon = -74.0
-launch_delay_sec = 40.0
+# Threats (config-backed profiles), each chosen to land IN or OFF the arc:
 
-# Far range ICBM - ~2000km from radar, apogee ~1200km
+# RS-26 Rubezh profile - arc passes 448 km from radar at bearing 5.8 (IN-BEAM)
 [[missiles]]
-name = "ICBM Far"
+name = "RS-26 Rubezh #In-Beam"
 affiliation = "Hostile"
 origin_lat = 45.0
 origin_lon = 135.0
 target_lat = 47.6
 target_lon = -122.3
-launch_delay_sec = 60.0
+launch_delay_sec = 20.0
 
-# Very far range - beyond detection envelope (~2500km)
+# Hwasong-15 profile - arc passes 1,034 km from radar at bearing 7.5 (IN-BEAM,
+# mid-envelope detection)
 [[missiles]]
-name = "ICBM Beyond"
+name = "Hwasong-15 #In-Beam"
 affiliation = "Hostile"
-origin_lat = 50.0
-origin_lon = 140.0
-target_lat = 34.0
-target_lon = -118.2
-launch_delay_sec = 80.0
+origin_lat = 62.0
+origin_lon = 160.0
+target_lat = 38.0
+target_lon = -105.0
+launch_delay_sec = 40.0
+
+# Hwasong-15 profile - arc passes 2,320 km from radar at bearing 346.7
+# (23 degrees off boresight - OUTSIDE the 25-degree arc; SBX should NOT
+# detect it, PAVE PAWS should)
+[[missiles]]
+name = "Hwasong-15 #Off-Beam"
+affiliation = "Hostile"
+origin_lat = 42.0
+origin_lon = 130.0
+target_lat = 40.7
+target_lon = -74.0
+launch_delay_sec = 60.0

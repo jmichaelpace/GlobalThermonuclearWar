@@ -1,17 +1,21 @@
 # S-400 Test Scenario
-# Isolated test of S-400 Triumf multi-layer defense system
-# Engagement envelope: 0.01-400km altitude, ~400km range
+# Isolated test of S-400 Triumf (Big Bird surveillance + Grave Stone fire control + 40N6)
+# 40N6 envelope: 0.01-30 km altitude, 400 km engagement range, 2.1 km/s
+# NOTE: the 40N6 is a long-range SAM, not a midcourse BMD interceptor - the
+# 100-400 km-apogee threats here will be tracked but REFUSED above 30 km.
+# The 147 km SRBM is the only realistic engagement (terminal, below 30 km).
 
 [metadata]
 id = "test_s400"
 name = "S-400 Test"
-description = "S-400 Battery vs multi-layer threats (0.01-400km altitude)"
+description = "S-400 Battery vs multi-layer threats (40N6 envelope 0.01-30km - high-altitude refusals expected)"
 region = "Europe"
 center_lat = 55.0
-center_lon = 38.0
-zoom = 4.5
+center_lon = 46.0
+zoom = 4.0
 
-# Single S-400 battery
+# Single S-400 battery - Big Bird (surveillance) is 360-degree; Grave Stone
+# (fire control) has a 90-degree cone aimed at the eastern threat axis
 [[defense_units]]
 name = "S-400 Test Battery"
 affiliation = "Friendly"
@@ -19,10 +23,13 @@ lat = 55.0
 lon = 38.0
 type = "S400"
 interceptors = 64
+facing_deg = 100.0  # Eastern threat box spans bearings 274-322; Grave Stone's 90-degree FC cone must cover the terminal geometry
 
-# Low altitude - ~150km range, apogee ~30km
+# Iskander-M: apogee 50 + 0.1*range
+# ~148 km range -> ~65 km apogee - above the 40N6's 30 km ceiling at apogee;
+# terminal engagement below 30 km is the only window (realistic SAM-vs-SRBM shot)
 [[missiles]]
-name = "SRBM-Low"
+name = "Iskander-M #1"
 affiliation = "Hostile"
 origin_lat = 54.0
 origin_lon = 39.5
@@ -30,9 +37,10 @@ target_lat = 55.0
 target_lon = 38.0
 launch_delay_sec = 10.0
 
-# Medium altitude - ~1000km range, apogee ~100km
+# Shahab-3: apogee 150 + 0.18*range
+# ~574 km range -> ~253 km apogee - REFUSED (far above 40N6 ceiling)
 [[missiles]]
-name = "MRBM-Mid"
+name = "Shahab-3 #1"
 affiliation = "Hostile"
 origin_lat = 55.0
 origin_lon = 47.0
@@ -40,9 +48,10 @@ target_lat = 55.0
 target_lon = 38.0
 launch_delay_sec = 25.0
 
-# High altitude - ~2500km range, apogee ~250km
+# Sejjil: apogee 250 + 0.16*range
+# ~1,397 km range -> ~474 km apogee - REFUSED
 [[missiles]]
-name = "MRBM-High"
+name = "Sejjil #1"
 affiliation = "Hostile"
 origin_lat = 55.0
 origin_lon = 60.0
@@ -50,9 +59,10 @@ target_lat = 55.0
 target_lon = 38.0
 launch_delay_sec = 40.0
 
-# Very high altitude - ~4000km range, apogee ~400km (at envelope limit)
+# RS-26: apogee 300 + 0.12*range
+# ~2,209 km range -> ~565 km apogee - REFUSED (deep midcourse)
 [[missiles]]
-name = "IRBM-VHigh"
+name = "RS-26 Rubezh #1"
 affiliation = "Hostile"
 origin_lat = 55.0
 origin_lon = 73.0

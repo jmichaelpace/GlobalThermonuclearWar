@@ -18,4 +18,6 @@ reload_time_minutes = 1440.0
 # Maximum number of interceptors that can be launched in one salvo
 max_salvo_size = 2
 # Maximum range at which interceptors can be launched (km)
-engagement_range_km = 500.0
+# SM-3 Block IIA flyout range: 2,500 km
+# https://missilethreat.csis.org/defsys/sm-3/
+engagement_range_km = 2500.0

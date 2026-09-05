@@ -1,31 +1,40 @@
 # Test Scenario Quick Reference
 
+All test scenarios use **config-backed missile profiles** (missile names resolve
+to `config/missiles/` — the `" #N"` suffix is stripped by the lookup) and
+**explicit sensor wiring** (every radar station declares `sensor_config`, every
+narrow-azimuth sensor/platform has `facing_deg`).
+
+Apogee values below are computed from the missile config:
+`apogee = apogee_base_km + apogee_range_factor * range_km`.
+
 ## Platform Tests (Defense System + Interceptor)
 
-| Scenario | System | Envelope | Threats | Purpose |
-|----------|--------|----------|---------|---------|
-| `test_thaad.toml` | THAAD | 40-150km alt, ~200km range | 2 SRBM, 1 MRBM | Terminal high-altitude intercept, salvo fire |
-| `test_aegis.toml` | AEGIS | 70-500km alt, ~500km range | 2 MRBM, 1 IRBM | Exo-atmospheric midcourse |
-| `test_patriot.toml` | Patriot PAC-3 | 0.5-40km alt, ~70km range | 3 SRBM | Terminal phase, low altitude |
-| `test_gbi.toml` | GBI | 200-2000km alt, ~2000km range | 2 ICBM | Long-range midcourse |
-| `test_iron_dome.toml` | Iron Dome | 0.5-10km alt, ~70km range | 3 rockets | Very low altitude, rapid engagement |
-| `test_arrow3.toml` | Arrow 3 | 20-400km alt, ~400km range | 2 MRBM, 1 IRBM | Exo-atmospheric |
-| `test_davids_sling.toml` | David's Sling | 10-70km alt, ~300km range | 2 SRBM, 1 MRBM | Mid-altitude layer |
-| `test_s400.toml` | S-400 | 0.01-400km alt, ~400km range | 4 missiles (low to very high) | Multi-layer capability |
+| Scenario | System | Interceptor Envelope | Threats (config) | Purpose |
+|----------|--------|----------------------|------------------|---------|
+| `test_thaad.toml` | THAAD + TPY-2 | 40-150 km alt, 200 km range, 2.8 km/s | Burkan-2 (115/105 km apogee), Shahab-3 (356 km apogee) | Descent intercepts through the envelope; salvo fire |
+| `test_aegis.toml` | AEGIS + SPY-1D | 100-600 km alt (exo), 2,500 km flyout, 4.5 km/s | Shahab-3 (363 km), Sejjil (570 km), RS-26 Rubezh (680 km apogee) | Exo midcourse/descent intercepts |
+| `test_patriot.toml` | Patriot + MPQ-65 | 0.5-40 km alt, 70 km range, 1.7 km/s | Iskander-M x3 (59-73 km apogee) | Terminal-phase-only engagement (apogees above ceiling) |
+| `test_gbi.toml` | GBI + Cobra Dane + SBX cueing | 200-2000 km alt, 2000 km range, 8.0 km/s | Hwasong-15 x2 (1,525/1,600 km apogee) | Long-range midcourse |
+| `test_iron_dome.toml` | Iron Dome + EL/M-2084 | 0-10 km alt, 70 km range, 0.7 km/s | Grad x3 (7.6-9.3 km apogee, south Lebanon geometry) | Rocket-class intercepts, rapid engagement |
+| `test_arrow3.toml` | Arrow 3 + Green Pine | 100-1000 km alt (exo), 2,400 km flyout, ~3.0 km/s | Shahab-3 x2, RS-26 Rubezh (439-695 km apogee) | Exo-atmospheric intercepts at apogee/midcourse |
+| `test_davids_sling.toml` | David's Sling + EL/M-2084 | 2-15 km alt, 300 km range, 2.55 km/s | Iskander-M x2, Shahab-3 (72-265 km apogee) | Terminal-window engagement (tiny window vs MRBM — misses expected) |
+| `test_s400.toml` | S-400 + Big Bird/Grave Stone | 40N6: 0.01-30 km alt, 400 km range, 2.1 km/s | Iskander-M, Shahab-3, Sejjil, RS-26 Rubezh | Terminal-only vs SRBM; high-altitude refusals expected (40N6 is a SAM, not a midcourse BMD interceptor) |
+| `test_aegis_geometry.toml` | AEGIS + SPY-1D | 100-600 km alt (exo) | Shahab-3 x3 (#HEAD-ON / #CROSSING / #OBLIQUE) | Guidance geometry: head-on engages, crossing legitimately misses (gimbal-limited terminal homing) |
 
 ## Sensor Tests (Radar Only - No Interceptors)
 
-| Scenario | Radar System | Nominal Range | Max Range (1.5×) | Band | Threats | Purpose |
-|----------|--------------|---------------|------------------|------|---------|---------|
-| `test_sensor_sbx.toml` | Sea-Based X-band | 2000km | **3000km** | X-band | 4 ICBM at varying ranges | Midcourse discrimination |
-| `test_sensor_cobra_dane.toml` | Cobra Dane (Shemya) | 3000km | **4500km** | L-band | 5 ICBM (800-3500km from radar) | Early warning, Pacific coverage |
-| `test_sensor_tpy2.toml` | AN/TPY-2 (THAAD) | 1000km | **1500km** | X-band | SRBM/MRBM/IRBM/ICBM | Forward-based mode, high resolution |
-| `test_sensor_spy1.toml` | AN/SPY-1 (AEGIS) | 400km | **600km** | S-band | SRBM/MRBM/IRBM at varying ranges | Volume search, AEGIS BMD |
-| `test_sensor_fylingdales.toml` | Fylingdales BMEWS (UK) | 3000km | **4500km** | UHF | MRBM/IRBM/ICBM (1000-3500km) | European early warning |
-| `test_sensor_pave_paws.toml` | PAVE PAWS (Beale AFB) | 3000km | **4500km** | UHF | SLBM/IRBM/ICBM (800-3500km) | Continental US early warning |
-| `test_sensor_green_pine.toml` | Green Pine (Israel) | 800km | **1200km** | L-band | SRBM/MRBM/IRBM (250-1000km) | Arrow fire control |
-| `test_sensor_don2n.toml` | Don-2N (Moscow) | 1000km | **1500km** | Phased-array | SRBM/MRBM/IRBM (300-1200km) | ABM battle management |
-| `test_sensor_thule.toml` | Thule BMEWS (Greenland) | 3000km | **4500km** | UHF | SLBM/ICBM (1000-3500km) | Arctic early warning |
+| Scenario | Sensor Config | Nominal Range | Max (1.5×) | Azimuth | Band | Threats | Purpose |
+|----------|---------------|---------------|------------|---------|------|---------|---------|
+| `test_sensor_sbx.toml` | SBX-1 | 4000 km | 6000 km | 25° ("soda straw") | X | RS-26 Rubezh, Hwasong-15 x2 | Narrow-arc discrimination, cued by PAVE PAWS; off-beam arc stays undetected by SBX |
+| `test_sensor_cobra_dane.toml` | Cobra Dane | 3000 km | 4500 km | 120° (facing 240°) | L | Hwasong-15 x5 | Early warning, NK launch-region coverage |
+| `test_sensor_tpy2.toml` | AN/TPY-2 | 1000 km | 1500 km | 120° (facing 180°) | X | Iskander-M, Shahab-3, RS-26 Rubezh, Hwasong-15 x2 | Forward-based mode, range ladder incl. azimuth/range-gated non-detections |
+| `test_sensor_spy1.toml` | AN/SPY-1D | 500 km | 750 km | 360° | S | Iskander-M, Shahab-3 x2, RS-26 Rubezh x2 | Volume search, range ladder past nominal |
+| `test_sensor_fylingdales.toml` | Fylingdales | 3000 km | 4500 km | 360° | L (UHF stand-in) | RS-26 Rubezh x2, Hwasong-15 x3 | European early warning, east-axis ladder |
+| `test_sensor_pave_paws.toml` | PAVE PAWS | 3000 km | 4500 km | 240° (facing 280°) | L (UHF stand-in) | Bulava, RS-26 Rubezh, Hwasong-15 x3 | CONUS early warning, SLBM + ICBM arcs |
+| `test_sensor_green_pine.toml` | Green Pine | 800 km | 1200 km | 120° (facing 67°) | L | Iskander-M, Shahab-3 x2, RS-26 Rubezh x2 | Arrow fire control, Iran-axis ladder incl. azimuth-gated non-detection |
+| `test_sensor_don2n.toml` | Don-2N | 1000 km | 1500 km | 360° | X | Iskander-M, Sineva, Bulava, Trident II x2 | ABM battle management, western SLBM approach ladder |
+| `test_sensor_thule.toml` | Thule | 3000 km | 4500 km | 240° (facing 55°) | L (UHF stand-in) | Sineva, Hwasong-15 x4 | Arctic early warning, Russian corridor |
 
 **Note**: Detection range rings show the maximum possible detection range (1.5× nominal). Detection probability degrades significantly with range, especially beyond nominal range. See `DETECTION_RANGES.md` for details.
 
@@ -45,6 +54,7 @@
 - ✅ Measure detection probability vs RCS, range, altitude
 - ✅ Test track staleness and freshness limits
 - ✅ Debug sensor-based gating (no track = no engagement authorization)
+- ✅ Verify azimuth gating (narrow-cone radars must be aimed with `facing_deg`)
 
 ## Test Methodology
 
@@ -66,19 +76,22 @@
 ## Expected Behaviors
 
 ### Platform Tests:
-- **THAAD**: Should engage SRBMs/MRBMs with apogee 40-150km, refuse ICBMs at 400km
-- **AEGIS**: Should engage MRBMs/IRBMs with apogee 70-500km
-- **Patriot**: Should engage only terminal phase SRBMs below 40km altitude
-- **GBI**: Should engage ICBMs at midcourse (200-2000km altitude)
-- **Iron Dome**: Should engage very low altitude rockets (0.5-10km)
-- **All Systems**: Should fire salvo_size=2 interceptors (SLS or SSL based on time)
+- **THAAD**: Engages Burkan-2s (descent through 40-150 km); Shahab-3 only on descent below 150 km
+- **AEGIS**: Engages Shahab-3/Sejjil inside the 100-600 km exo band; RS-26 Rubezh on descent
+- **Patriot**: Terminal-only — all Iskander apogees are above the 40 km ceiling
+- **GBI**: Hwasong-15 midcourse at 1,500+ km altitude
+- **Iron Dome**: Grad rockets at 7-9 km apogee — the only rocket-class test that actually works
+- **David's Sling**: Tiny terminal windows vs 72-265 km apogees — misses/refusals expected vs the MRBM
+- **S-400**: Iskander terminal engagement; Shahab-3/Sejjil/RS-26 refused above 30 km (realistic SAM limits)
+- **AEGIS geometry**: HEAD-ON engages; CROSSING legitimately misses; OBLIQUE partial-lead
 
 ### Sensor Tests:
-- **Long-range radars (3000km)**: Should detect ICBMs at 1000-3000km, lose track beyond
-- **Mid-range radars (1000-2000km)**: Should detect threats within range, degrade quality at edge
-- **Short-range radars (400-800km)**: Should lose track of distant threats, strong quality nearby
-- **All Systems**: Should require 3+ measurements before track establishment
-- **All Systems**: Track quality should be >0.4 for engagement authorization
+- **Long-range radars (3000-4000 km nominal)**: Detect ICBMs across their arcs; quality degrades past nominal
+- **Mid-range radars (800-1000 km nominal)**: Detect within range, degrade at edge; azimuth gating for Green Pine/TPY-2/Cobra Dane
+- **Short-range radars (500 km nominal)**: Strong quality nearby, lose distant tracks
+- **All Systems**: Require 3+ measurements before track establishment
+- **All Systems**: Track quality >0.4 required for engagement authorization
+- **All radars with <360° azimuth**: Must have `facing_deg` set — an unaimed cone misses its own test targets
 
 ## Scenario Combinations
 

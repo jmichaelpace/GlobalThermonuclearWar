@@ -18,6 +18,7 @@ lat = 37.5
 lon = -122.0
 type = "THAAD"
 interceptors = 48
+facing_deg = 298.0  # TPY-2 120-degree cone aimed at the westbound ICBM terminal approach
 
 [[defense_units]]
 name = "THAAD Battery Bravo"
@@ -26,6 +27,7 @@ lat = 47.6
 lon = -122.3
 type = "THAAD"
 interceptors = 48
+facing_deg = 292.0  # Threat axis: NK ICBMs approach from the WNW
 
 [[defense_units]]
 name = "GBI Site Fort Greely"
@@ -34,6 +36,7 @@ lat = 64.0
 lon = -146.0
 type = "GBI"
 interceptors = 44
+facing_deg = 288.0  # Platform radar (Cobra Dane) aimed at NK bearing
 
 [[defense_units]]
 name = "GBI Site Vandenberg"
@@ -42,6 +45,7 @@ lat = 34.7
 lon = -120.5
 type = "GBI"
 interceptors = 8
+facing_deg = 315.0  # NK bearing from Vandenberg
 
 [[defense_units]]
 name = "USS Shiloh (Aegis)"
@@ -50,6 +54,7 @@ lat = 38.0
 lon = 132.0
 type = "Aegis"
 interceptors = 96
+# SPY-1: 360-degree coverage - no facing needed
 
 [[defense_units]]
 name = "USS John Paul Jones (Aegis)"
@@ -58,6 +63,7 @@ lat = 35.0
 lon = -165.0
 type = "Aegis"
 interceptors = 96
+# SPY-1: 360-degree coverage - no facing needed
 
 # Radar Stations
 [[radar_stations]]
@@ -66,6 +72,8 @@ affiliation = "Friendly"
 lat = 52.7
 lon = 174.1
 range_km = 3000.0
+sensor_config = "Cobra Dane"
+facing_deg = 240.0  # 120-degree cone: NK launch sites span bearings 208-267 from Shemya; 240 centers the arc
 
 [[radar_stations]]
 name = "SBX-1"
@@ -73,6 +81,10 @@ affiliation = "Friendly"
 lat = 45.0
 lon = 170.0
 range_km = 4000.0
+sensor_config = "SBX-1"
+# 25-degree "soda straw" arc aimed at the NK->CONUS midcourse corridor
+# (closest-approach bearings 344.6-351.5 from this position)
+facing_deg = 348.0
 
 # Satellites
 [[satellites]]
@@ -91,7 +103,7 @@ lon = -135.0
 altitude_km = 35786.0
 sensor_type = "Infrared"
 
-# Missiles
+# Missiles - Hwasong-15 profile (apogee 800 + 0.08*range), 2 decoys, low RCS
 [[missiles]]
 name = "Hwasong-15 #1"
 affiliation = "Hostile"
@@ -100,6 +112,7 @@ origin_lon = 125.5
 target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 30.0
+# ~9,070 km range, ~1,525 km apogee - GBI midcourse engagement
 
 [[missiles]]
 name = "Hwasong-15 #2"
@@ -109,6 +122,7 @@ origin_lon = 125.5
 target_lat = 47.6
 target_lon = -122.3
 launch_delay_sec = 60.0
+# ~8,290 km range, ~1,460 km apogee
 
 [[missiles]]
 name = "Hwasong-15 #3"
@@ -118,3 +132,4 @@ origin_lon = 125.5
 target_lat = 34.0
 target_lon = -118.2
 launch_delay_sec = 90.0
+# ~9,300 km range, ~1,545 km apogee

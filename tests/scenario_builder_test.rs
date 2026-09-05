@@ -162,6 +162,28 @@ fn test_option_fields_round_trip() {
             );
         }
     }
+
+    // Defense-unit facing_deg must round-trip the same way: absent keys must
+    // deserialize back to None.
+    for (orig, new) in radar_none
+        .defense_units
+        .iter()
+        .zip(reparsed.defense_units.iter())
+    {
+        assert_eq!(
+            orig.facing_deg.is_some(),
+            new.facing_deg.is_some(),
+            "facing_deg presence changed for defense unit '{}'",
+            orig.name
+        );
+        if let (Some(a), Some(b)) = (orig.facing_deg, new.facing_deg) {
+            assert_eq!(
+                a, b,
+                "facing_deg value changed for defense unit '{}'",
+                orig.name
+            );
+        }
+    }
 }
 
 /// A scenario file with `Some` Option values must keep them through
@@ -226,9 +248,11 @@ fn test_draft_to_engine_chain() {
     draft.add_satellite(GeoCoord::new(0.0, 130.0));
     draft.add_missile(GeoCoord::new(39.0, 125.5), GeoCoord::new(35.0, 139.0));
 
-    // User edits: rename + adjust metadata
+    // User edits: rename + adjust metadata + set emplacement facing
     draft.file.defense_units[0].name = "Test Aegis".to_string();
     draft.file.defense_units[0].interceptors = 8;
+    // Facing must flow through the whole chain: TOML -> engine sensor azimuth
+    draft.file.defense_units[0].facing_deg = Some(95.0);
     draft.file.metadata.name = "Chain Test".to_string();
     draft.filename = "chain_test_builder".to_string();
     draft.sync_metadata();
@@ -256,6 +280,30 @@ fn test_draft_to_engine_chain() {
     assert_eq!(unit.interceptors_remaining, 8);
     assert!((unit.position.lat - 37.0).abs() < 1e-9);
     assert!((unit.position.lon - 132.0).abs() < 1e-9);
+
+    // facing_deg must aim the unit's sensors (this draft's Aegis carries a
+    // 360-degree SPY-1, which ignores facing - verified separately below).
+    // Aegis SPY-1 is full coverage: facing is a no-op, so also verify with a
+    // narrow-azimuth platform (THAAD's TPY-2 cone) in a scratch draft.
+    let mut thaad_draft = ScenarioDraft::new();
+    thaad_draft.add_defense_unit(GeoCoord::new(37.0, 132.0), "THAAD");
+    thaad_draft.file.defense_units[0].facing_deg = Some(270.0);
+    let thaad_toml = thaad_draft.to_toml().expect("thaad draft serializes");
+    let thaad_file: ScenarioFile = toml::from_str(&thaad_toml).expect("thaad re-parse");
+    let mut thaad_engine = SimulationEngine::new();
+    thaad_file.load_into_engine(&mut thaad_engine);
+    let thaad_unit = &thaad_engine.defense_units[0];
+    assert!(
+        thaad_unit.sensors.iter().all(|s| {
+            (s.azimuth_center_deg - 270.0).abs() < 1e-9 && s.azimuth_coverage_deg < 360.0
+        }),
+        "THAAD sensors must be aimed at facing 270 (got {:?})",
+        thaad_unit
+            .sensors
+            .iter()
+            .map(|s| (s.azimuth_center_deg, s.azimuth_coverage_deg))
+            .collect::<Vec<_>>()
+    );
 
     let missile = &engine.missiles[0];
     assert!((missile.origin.lat - 39.0).abs() < 1e-9);

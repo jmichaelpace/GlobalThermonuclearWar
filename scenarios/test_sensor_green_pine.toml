@@ -1,6 +1,7 @@
 # Green Pine / Super Green Pine Radar Test Scenario
 # Israeli early warning and fire control radar for Arrow system
-# Detection range: ~500-800km, L-band phased-array
+# Green Pine config: 800 km nominal detection (1.5x = 1200 km max), L-band,
+# 120-degree azimuth cone, 1.6x track / 2.2x fire-control multipliers.
 
 [metadata]
 id = "test_sensor_green_pine"
@@ -11,17 +12,21 @@ center_lat = 31.0
 center_lon = 35.0
 zoom = 4.5
 
-# Green Pine radar (Central Israel)
+# Green Pine radar (Central Israel) - 120-degree cone aimed at Iran (bearing 67)
 [[radar_stations]]
 name = "Super Green Pine"
 affiliation = "Friendly"
 lat = 31.0
 lon = 35.0
 range_km = 800.0
+sensor_config = "Green Pine"
+facing_deg = 67.0
 
-# SRBM - ~250km from radar
+# Threat ladder on the Iran axis. Config-backed profiles.
+
+# SRBM - Iskander-M profile, ~250 km from radar (inside nominal)
 [[missiles]]
-name = "SRBM Close"
+name = "Iskander-M #Close"
 affiliation = "Hostile"
 origin_lat = 33.5
 origin_lon = 36.3
@@ -29,9 +34,9 @@ target_lat = 31.0
 target_lon = 35.0
 launch_delay_sec = 10.0
 
-# MRBM - ~450km from radar
+# MRBM - Shahab-3 profile, western-Iraq launch ~450 km from radar
 [[missiles]]
-name = "MRBM Near"
+name = "Shahab-3 #Near"
 affiliation = "Hostile"
 origin_lat = 33.3
 origin_lon = 44.4
@@ -39,9 +44,10 @@ target_lat = 31.0
 target_lon = 35.0
 launch_delay_sec = 25.0
 
-# MRBM - ~650km from radar
+# MRBM - Shahab-3 profile, Iran launch ~1,608 km from radar (detected on
+# the climb portion as it enters the 1200 km max envelope)
 [[missiles]]
-name = "MRBM Mid"
+name = "Shahab-3 #Mid"
 affiliation = "Hostile"
 origin_lat = 35.7
 origin_lon = 51.4
@@ -49,9 +55,9 @@ target_lat = 31.0
 target_lon = 35.0
 launch_delay_sec = 40.0
 
-# IRBM - ~800km from radar (at limit)
+# IRBM - RS-26 profile, long arc from Iran; long stretches inside envelope
 [[missiles]]
-name = "IRBM Limit"
+name = "RS-26 Rubezh #Limit"
 affiliation = "Hostile"
 origin_lat = 35.7
 origin_lon = 51.4
@@ -59,9 +65,10 @@ target_lat = 24.0
 target_lon = 35.0
 launch_delay_sec = 55.0
 
-# Beyond range - ~1000km
+# Beyond the cone - deep-south arc that exits the 120-degree azimuth cone
+# before reaching the radar: azimuth-gated non-detection (not range-gated)
 [[missiles]]
-name = "IRBM Beyond"
+name = "RS-26 Rubezh #Beyond"
 affiliation = "Hostile"
 origin_lat = 35.7
 origin_lon = 51.4

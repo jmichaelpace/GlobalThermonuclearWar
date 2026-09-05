@@ -37,6 +37,11 @@ pub struct DefenseUnitConfig {
     #[serde(rename = "type")]
     pub defense_type: String,
     pub interceptors: u32,
+    /// Azimuth direction the unit's sensors face (degrees, 0=North, 90=East).
+    /// Aims narrow-azimuth fire control radars (e.g. TPY-2's 120-degree cone)
+    /// at the threat axis. No effect on 360-degree sensors (SPY-1, Big Bird).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facing_deg: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,12 +98,13 @@ impl ScenarioFile {
             let defense_type = parse_defense_type(&unit.defense_type);
             let position = GeoCoord::new(unit.lat, unit.lon);
 
-            engine.add_defense_unit(
+            engine.add_defense_unit_with_facing(
                 unit.name.clone(),
                 affiliation,
                 position,
                 defense_type,
                 unit.interceptors,
+                unit.facing_deg,
             );
         }
 

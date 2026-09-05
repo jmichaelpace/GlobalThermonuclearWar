@@ -1,6 +1,7 @@
 # PAVE PAWS Radar Test Scenario
 # Phased Array Warning System - Beale AFB, California
-# Detection range: ~3000km, UHF phased-array early warning
+# PAVE PAWS config: 3000 km nominal detection (1.5x = 4500 km max), L-band
+# (stand-in for the real UHF), 240-degree azimuth (two 120-degree faces).
 
 [metadata]
 id = "test_sensor_pave_paws"
@@ -11,17 +12,21 @@ center_lat = 39.1
 center_lon = -121.4
 zoom = 3.0
 
-# PAVE PAWS radar (Beale AFB, California)
+# PAVE PAWS radar (Beale AFB, California) - 240-degree cone aimed at the
+# Pacific threat axis (west/NW: SLBM boxes and the NK bearing at 314)
 [[radar_stations]]
 name = "PAVE PAWS Beale"
 affiliation = "Friendly"
 lat = 39.1
 lon = -121.4
 range_km = 3000.0
+sensor_config = "PAVE PAWS"
+facing_deg = 280.0  # Covers bearings 160-400 (i.e. 160-360 + 0-40): the whole Pacific arc plus polar approaches
 
-# SLBM - ~800km from radar (submarine launch off coast)
+# SLBM - Bulava profile (apogee 500 + 0.1*range, 4 decoys)
+# Pacific launch box, ~740 km from radar at boost
 [[missiles]]
-name = "SLBM Close"
+name = "Bulava #Close"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = -128.0
@@ -29,9 +34,9 @@ target_lat = 37.5
 target_lon = -122.0
 launch_delay_sec = 15.0
 
-# IRBM - ~1500km from radar
+# IRBM - RS-26 profile; mid-Pacific launch box
 [[missiles]]
-name = "IRBM Near"
+name = "RS-26 Rubezh #Near"
 affiliation = "Hostile"
 origin_lat = 40.0
 origin_lon = 175.0
@@ -39,9 +44,9 @@ target_lat = 34.0
 target_lon = -118.2
 launch_delay_sec = 30.0
 
-# ICBM - ~2200km from radar
+# ICBM - Hwasong-15 profile, NK->NYC arc; closest approach ~2,200 km
 [[missiles]]
-name = "ICBM Mid"
+name = "Hwasong-15 #Mid"
 affiliation = "Hostile"
 origin_lat = 42.0
 origin_lon = 130.0
@@ -49,9 +54,9 @@ target_lat = 40.7
 target_lon = -74.0
 launch_delay_sec = 50.0
 
-# ICBM - ~2900km from radar (near limit)
+# ICBM - Hwasong-15 profile, NK->DC arc; closest approach ~2,900 km (near limit)
 [[missiles]]
-name = "ICBM Far"
+name = "Hwasong-15 #Far"
 affiliation = "Hostile"
 origin_lat = 40.0
 origin_lon = 125.0
@@ -59,9 +64,9 @@ target_lat = 38.9
 target_lon = -77.0
 launch_delay_sec = 70.0
 
-# Beyond range - ~3500km
+# Beyond range - deep-Pacific launch, closest approach ~3,500 km
 [[missiles]]
-name = "ICBM Beyond"
+name = "Hwasong-15 #Beyond"
 affiliation = "Hostile"
 origin_lat = 35.0
 origin_lon = 115.0

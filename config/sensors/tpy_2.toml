@@ -10,6 +10,9 @@ country = "USA"
 # Detection and coverage parameters
 [detection]
 # Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
+# Reportedly capable of tracking objects at ranges 870 to 3,000 km depending
+# on target and mode (terminal vs forward-based).
+# https://missilethreat.csis.org/defsys/tpy-2/
 detection_range_km = 1000.0
 # Horizontal field of view (degrees) - how wide the radar can scan
 azimuth_coverage_deg = 120.0
