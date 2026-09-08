@@ -584,6 +584,112 @@ pub enum MissReason {
     DebrisDamage, // Damaged by debris cloud
     OffCourse,    // Flew past intercept point without close approach
     SeekerLost,   // Seeker lost track of target
+    BreakOff,     // Engagement broken off: no time-synced intercept geometry remained
+}
+
+/// Guidance-side closest-point-of-approach (CPA) divergence tracker.
+///
+/// Detects that an interceptor has passed its target and the range is now
+/// opening, using TIME-based hysteresis to filter momentary distance
+/// fluctuations (terminal altitude corrections, PN heading changes,
+/// mid-course re-solves). Hysteresis duration is caller-supplied:
+///   - Coast phase: ~1.5x the mid-course guidance update interval, so fire
+///     control gets a full re-solve opportunity before declaring the miss.
+///   - Terminal phase: a short constant (~0.15 s) — fast enough to resolve
+///     misses promptly, long enough to filter terminal-maneuver transients.
+///
+/// Runs in Coast and Terminal phases only (NOT Boost — under thrust the
+/// geometry is not yet meaningful and real destruct doctrine doesn't
+/// assess mid-boost). A mistimed interceptor can arrive at the predicted
+/// intercept point early/late in mid-course with the target already behind
+/// it; without coast-phase tracking such rounds fly on toward a stale
+/// intercept point until the flight-time timeout — the exact "keeps
+/// flying after an obvious miss" behavior post-miss command-destruct
+/// doctrine exists to prevent.
+///
+/// CPA is tracked ONLY here; `resolve_intercepts` consumes the confirmed
+/// `passed_cpa` flag and never re-derives it (single-owner rule, see
+/// AGENTS.md "Fire Control Architecture").
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct CpaDivergenceState {
+    /// Distance to target last sample (f64::MAX before first sample)
+    pub previous_distance_km: f64,
+    /// Minimum distance observed (the true CPA distance, for miss reporting)
+    pub min_distance_km: f64,
+    /// Accumulated sim time of consecutive divergence (hysteresis)
+    pub divergence_duration_sec: f64,
+    /// True once CPA is confirmed — stops guidance from turning back
+    pub passed_cpa: bool,
+    /// Heading (degrees) when CPA was detected — maintained afterward
+    pub heading_at_cpa_deg: f64,
+}
+
+impl Default for CpaDivergenceState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CpaDivergenceState {
+    /// Distance must change by at least this much to count as increasing or
+    /// decreasing (guards against float jitter being read as divergence)
+    const DISTANCE_TOLERANCE_KM: f64 = 0.1;
+
+    pub fn new() -> Self {
+        Self {
+            previous_distance_km: f64::MAX,
+            min_distance_km: f64::MAX,
+            divergence_duration_sec: 0.0,
+            passed_cpa: false,
+            heading_at_cpa_deg: 0.0,
+        }
+    }
+
+    /// Feed one sample of range data. Call every guidance update while the
+    /// interceptor is in flight (post-boost) and its target is alive.
+    ///
+    /// `current_distance_km` — current 3D distance to the assigned target
+    /// `heading_deg`          — current guidance heading (stored at CPA)
+    /// `dt_sec`               — sim time since the previous sample
+    /// `hysteresis_sec`       — sustained divergence required to confirm CPA
+    ///
+    /// Returns true on the sample where CPA is first confirmed.
+    pub fn update(
+        &mut self,
+        current_distance_km: f64,
+        heading_deg: f64,
+        dt_sec: f64,
+        hysteresis_sec: f64,
+    ) -> bool {
+        // Track the true CPA (minimum) distance for miss reporting
+        if current_distance_km < self.min_distance_km {
+            self.min_distance_km = current_distance_km;
+        }
+
+        if self.passed_cpa {
+            return false; // Latched — one-way flag
+        }
+
+        if self.previous_distance_km < f64::MAX {
+            if current_distance_km > self.previous_distance_km + Self::DISTANCE_TOLERANCE_KM {
+                // Range opening — accumulate divergence time
+                self.divergence_duration_sec += dt_sec.max(0.0);
+                if self.divergence_duration_sec >= hysteresis_sec {
+                    self.passed_cpa = true;
+                    self.heading_at_cpa_deg = heading_deg;
+                    return true;
+                }
+            } else if current_distance_km < self.previous_distance_km - Self::DISTANCE_TOLERANCE_KM
+            {
+                // Range closing — still converging, reset hysteresis
+                self.divergence_duration_sec = 0.0;
+            }
+            // Within tolerance: neutral — leave accumulated time unchanged
+        }
+
+        self.previous_distance_km = current_distance_km;
+        false
+    }
 }
 
 /// Kinematics profile for an interceptor type
@@ -852,11 +958,13 @@ pub struct Interceptor {
     // Proportional Navigation state
     pub last_los_angle_rad: f64, // Last line-of-sight angle for PN guidance
     pub los_rate_rad_s: f64,     // Rate of change of LOS angle
-    // Closest Point of Approach (CPA) tracking
-    pub previous_distance_to_target_km: f64, // Distance to target last frame (for CPA detection)
-    pub cpa_increasing_frames: u32, // Consecutive frames where distance is increasing (hysteresis)
-    pub passed_cpa: bool,           // True once CPA is detected - stops guidance from turning back
-    pub heading_at_cpa: f64, // Heading (degrees) when CPA was detected - maintain this heading
+    // Closest Point of Approach (CPA) tracking — sole owner of CPA state
+    pub cpa_tracking: CpaDivergenceState,
+    // Consecutive guidance cycles that found NO time-synchronized intercept
+    // solution on the estimated trajectory. Once this exceeds a break-off
+    // threshold, fire control orders command-destruct (the engagement has
+    // no remaining kill geometry — chasing on wastes the round).
+    pub consecutive_unsynced_guidance_cycles: u32,
     // Final intercept result (snapshot at time of resolution)
     pub final_miss_distance_km: Option<f64>, // 3D miss distance at intercept (None if not resolved)
     pub final_pk: Option<f64>, // Pk at moment of intercept attempt (None if not resolved)
@@ -956,11 +1064,9 @@ impl Interceptor {
             // Proportional Navigation state
             last_los_angle_rad: 0.0,
             los_rate_rad_s: 0.0,
-            // CPA tracking - start with large value
-            previous_distance_to_target_km: f64::MAX,
-            cpa_increasing_frames: 0,
-            passed_cpa: false,
-            heading_at_cpa: 0.0,
+            // CPA tracking - sole owner of CPA state (all phases)
+            cpa_tracking: CpaDivergenceState::new(),
+            consecutive_unsynced_guidance_cycles: 0,
             // Final intercept result
             final_miss_distance_km: None,
             final_pk: None,
@@ -1041,5 +1147,92 @@ impl Interceptor {
 
         // Update phase
         self.phase = kin.phase_at_progress(self.flight_progress(), flight_duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpa_requires_sustained_divergence() {
+        let mut cpa = CpaDivergenceState::new();
+        // Divergence in 0.25s steps (exact in binary) with 1.0s hysteresis.
+        // The first sample only initializes previous_distance (no delta),
+        // so samples 2-4 accumulate 0.75s and must not confirm...
+        for i in 1..=4 {
+            let dist = 100.0 + i as f64;
+            assert!(
+                !cpa.update(dist, 45.0, 0.25, 1.0),
+                "sample {} must not confirm CPA (hysteresis = 1.0s)",
+                i
+            );
+        }
+        // ...the 5th sample reaches exactly 1.0s of divergence and confirms
+        assert!(cpa.update(105.0, 45.0, 0.25, 1.0));
+        assert!(cpa.passed_cpa);
+        assert_eq!(cpa.heading_at_cpa_deg, 45.0);
+    }
+
+    #[test]
+    fn test_cpa_closing_resets_hysteresis() {
+        let mut cpa = CpaDivergenceState::new();
+        // 0.75s of divergence (samples 2-4; first sample initializes only),
+        // then closing resumes before the threshold is reached
+        for i in 1..=4 {
+            assert!(!cpa.update(100.0 + i as f64, 45.0, 0.25, 1.0));
+        }
+        cpa.update(100.0, 45.0, 0.25, 1.0); // Below tolerance - resets accumulator
+        assert_eq!(cpa.divergence_duration_sec, 0.0);
+        // Another 0.75s of sustained divergence still under hysteresis
+        // threshold: the reset sample re-initializes previous_distance, so
+        // samples 121-123 accumulate exactly 3 * 0.25s
+        for i in 1..=3 {
+            assert!(
+                !cpa.update(120.0 + i as f64, 45.0, 0.25, 1.0),
+                "reset must restart hysteresis from zero"
+            );
+        }
+        assert_eq!(cpa.divergence_duration_sec, 0.75);
+        assert!(!cpa.passed_cpa);
+        // But a full 1.0s of sustained divergence after the reset does confirm
+        assert!(cpa.update(124.0, 45.0, 0.25, 1.0));
+        assert!(cpa.passed_cpa);
+    }
+
+    #[test]
+    fn test_cpa_latches_and_stores_heading() {
+        let mut cpa = CpaDivergenceState::new();
+        for i in 1..=5 {
+            cpa.update(50.0 + i as f64, 90.0, 0.25, 1.0);
+        }
+        assert!(cpa.passed_cpa);
+        // Latched: further updates never re-trigger or overwrite heading
+        assert!(!cpa.update(200.0, 180.0, 0.25, 1.0));
+        assert_eq!(cpa.heading_at_cpa_deg, 90.0);
+    }
+
+    #[test]
+    fn test_cpa_tolerance_filters_jitter() {
+        let mut cpa = CpaDivergenceState::new();
+        // Jitter well inside the 0.1 km tolerance must never accumulate
+        for i in 0..100 {
+            let jitter = if i % 2 == 0 { 0.01 } else { -0.01 };
+            assert!(!cpa.update(100.0 + jitter, 45.0, 0.1, 1.0));
+        }
+        assert_eq!(cpa.divergence_duration_sec, 0.0);
+        assert!(!cpa.passed_cpa);
+    }
+
+    #[test]
+    fn test_cpa_tracks_true_minimum_distance() {
+        let mut cpa = CpaDivergenceState::new();
+        // Close to 20km, then diverge past it: reported CPA must be the
+        // minimum observed, not the distance at confirmation
+        for d in [100.0, 50.0, 20.0, 25.0, 30.0, 40.0] {
+            cpa.update(d, 45.0, 0.5, 5.0);
+        }
+        assert!(!cpa.passed_cpa); // 1.5s divergence < 5.0s hysteresis
+        assert_eq!(cpa.min_distance_km, 20.0);
     }
 }

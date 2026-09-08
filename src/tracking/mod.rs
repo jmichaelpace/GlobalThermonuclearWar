@@ -45,6 +45,10 @@ pub enum EventType {
     InterceptMiss {
         target: String,
     },
+    /// Interceptor command-destructed after a confirmed miss (FTS doctrine)
+    InterceptorSelfDestruct {
+        target: String,
+    },
     MissileImpact {
         name: String,
     },
@@ -359,6 +363,28 @@ impl EventTracker {
                             target: target_name,
                         },
                     );
+                }
+                // Post-miss command-destruct (FTS doctrine): the CPA tracker
+                // confirmed the interceptor passed the target outside kill
+                // radius, so fire control destroyed the round. Distinct from
+                // the plain Miss event: same doctrine outcome (follow-up
+                // fires via kill assessment), different terminal event.
+                (Some(InterceptorStatus::InFlight), InterceptorStatus::SelfDestruct)
+                | (None, InterceptorStatus::SelfDestruct)
+                    if prev_status != Some(InterceptorStatus::SelfDestruct) =>
+                {
+                    self.event_log.add(
+                        sim_time,
+                        EventType::InterceptorSelfDestruct {
+                            target: target_name,
+                        },
+                    );
+                    // Command-destruct visual effect at the interceptor's
+                    // last position (the destruct point)
+                    effects.push(EffectRequest {
+                        position: interceptor.position,
+                        effect_type: EffectType::SelfDestruct,
+                    });
                 }
                 _ => {}
             }

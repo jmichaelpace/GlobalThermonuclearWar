@@ -486,6 +486,9 @@ impl App {
                     EffectType::Debris => {
                         EffectsManager::render_debris_effect(painter, pos, progress);
                     }
+                    EffectType::SelfDestruct => {
+                        EffectsManager::render_self_destruct_effect(painter, pos, progress);
+                    }
                 }
             }
         }
@@ -540,6 +543,11 @@ impl App {
                             "✗",
                             format!("Missed {}", target),
                             egui::Color32::from_rgb(255, 150, 50),
+                        ),
+                        EventType::InterceptorSelfDestruct { target } => (
+                            "💥",
+                            format!("Self-destructed after miss on {}", target),
+                            egui::Color32::from_rgb(255, 200, 100),
                         ),
                         EventType::MissileImpact { name } => (
                             "💥",
@@ -2886,11 +2894,14 @@ impl App {
             }
         }
 
-        // Check interceptors (in flight, hit, or miss)
+        // Check interceptors (in flight, hit, miss, or self-destructed)
         for interceptor in &self.snapshot.interceptors {
             if !matches!(
                 interceptor.status,
-                InterceptorStatus::InFlight | InterceptorStatus::Hit | InterceptorStatus::Miss
+                InterceptorStatus::InFlight
+                    | InterceptorStatus::Hit
+                    | InterceptorStatus::Miss
+                    | InterceptorStatus::SelfDestruct
             ) {
                 continue;
             }
@@ -4705,7 +4716,10 @@ impl App {
         // This keeps the path visible after the intercept for context
         if matches!(
             interceptor.status,
-            InterceptorStatus::InFlight | InterceptorStatus::Hit | InterceptorStatus::Miss
+            InterceptorStatus::InFlight
+                | InterceptorStatus::Hit
+                | InterceptorStatus::Miss
+                | InterceptorStatus::SelfDestruct
         ) {
             self.render_interceptor_trajectory(painter, screen_rect, interceptor);
         }
@@ -4714,7 +4728,10 @@ impl App {
         // Allow InFlight, Hit, and Miss to render their respective markers
         if !matches!(
             interceptor.status,
-            InterceptorStatus::InFlight | InterceptorStatus::Hit | InterceptorStatus::Miss
+            InterceptorStatus::InFlight
+                | InterceptorStatus::Hit
+                | InterceptorStatus::Miss
+                | InterceptorStatus::SelfDestruct
         ) {
             return;
         }
@@ -4727,9 +4744,11 @@ impl App {
         // Calculate heading based on actual direction of travel
         // After CPA, use the locked heading to prevent flip-flopping
         let heading = {
-            let bearing_deg = if interceptor.passed_cpa && interceptor.heading_at_cpa != 0.0 {
+            let bearing_deg = if interceptor.cpa_tracking.passed_cpa
+                && interceptor.cpa_tracking.heading_at_cpa_deg != 0.0
+            {
                 // Use stored heading after CPA - prevents visual flip-flop
-                interceptor.heading_at_cpa
+                interceptor.cpa_tracking.heading_at_cpa_deg
             } else {
                 // Normal: calculate from movement direction
                 bearing(interceptor.previous_position, interceptor.position)
@@ -4742,7 +4761,7 @@ impl App {
             InterceptorStatus::InFlight => egui::Color32::from_rgb(60, 120, 220), // Dark blue for in-flight
             InterceptorStatus::Hit => egui::Color32::from_rgb(50, 255, 50), // Bright green for hit
             InterceptorStatus::Miss => egui::Color32::from_rgb(255, 50, 50), // Red for miss
-            InterceptorStatus::SelfDestruct => egui::Color32::from_rgb(150, 150, 150),
+            InterceptorStatus::SelfDestruct => egui::Color32::from_rgb(255, 170, 60), // Amber for command-destruct
         };
 
         for pos in positions {
@@ -4771,7 +4790,10 @@ impl App {
             }
 
             // Draw the interceptor triangle (not for misses - they show red X instead)
-            if interceptor.status != InterceptorStatus::Miss {
+            if !matches!(
+                interceptor.status,
+                InterceptorStatus::Miss | InterceptorStatus::SelfDestruct
+            ) {
                 painter.add(egui::Shape::convex_polygon(
                     vec![tip, left, right],
                     color,
@@ -4849,6 +4871,7 @@ impl App {
                         MissReason::DebrisDamage => "Debris",
                         MissReason::OffCourse => "Off Course",
                         MissReason::SeekerLost => "Seeker Lost",
+                        MissReason::BreakOff => "Break-Off",
                         MissReason::None => "Miss",
                     };
                     painter.text(
@@ -4857,6 +4880,44 @@ impl App {
                         reason_text,
                         egui::FontId::proportional(10.0),
                         egui::Color32::from_rgb(255, 100, 100),
+                    );
+                }
+                InterceptorStatus::SelfDestruct => {
+                    // Amber burst marker for post-miss command-destruct
+                    let x_size = 10.0;
+                    // Draw glow behind marker
+                    painter.circle_filled(
+                        pos,
+                        12.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 170, 60, 60),
+                    );
+                    // Draw X in self-destruct amber
+                    painter.line_segment(
+                        [
+                            egui::pos2(pos.x - x_size, pos.y - x_size),
+                            egui::pos2(pos.x + x_size, pos.y + x_size),
+                        ],
+                        egui::Stroke::new(3.5, egui::Color32::from_rgb(255, 170, 60)),
+                    );
+                    painter.line_segment(
+                        [
+                            egui::pos2(pos.x + x_size, pos.y - x_size),
+                            egui::pos2(pos.x - x_size, pos.y + x_size),
+                        ],
+                        egui::Stroke::new(3.5, egui::Color32::from_rgb(255, 170, 60)),
+                    );
+                    // Label below the marker
+                    let label = match interceptor.miss_reason {
+                        MissReason::OffCourse => "Self-Destruct (Miss)",
+                        MissReason::BreakOff => "Break-Off (No Geometry)",
+                        _ => "Self-Destruct",
+                    };
+                    painter.text(
+                        egui::pos2(pos.x, pos.y + 16.0),
+                        egui::Align2::CENTER_TOP,
+                        label,
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::from_rgb(255, 190, 100),
                     );
                 }
                 _ => {}
@@ -5360,7 +5421,12 @@ impl App {
             .simulation
             .interceptors
             .iter()
-            .filter(|i| i.status == InterceptorStatus::Miss)
+            // SelfDestruct-by-miss is a miss outcome for stats purposes
+            .filter(|i| {
+                i.status == InterceptorStatus::Miss
+                    || (i.status == InterceptorStatus::SelfDestruct
+                        && matches!(i.miss_reason, MissReason::OffCourse | MissReason::BreakOff))
+            })
             .count();
 
         let total_interceptors_available: u32 = self
@@ -5546,11 +5612,14 @@ impl App {
             }
         }
 
-        // Check interceptors (in flight, hit, or miss)
+        // Check interceptors (in flight, hit, miss, or self-destructed)
         for interceptor in &self.snapshot.interceptors {
             if !matches!(
                 interceptor.status,
-                InterceptorStatus::InFlight | InterceptorStatus::Hit | InterceptorStatus::Miss
+                InterceptorStatus::InFlight
+                    | InterceptorStatus::Hit
+                    | InterceptorStatus::Miss
+                    | InterceptorStatus::SelfDestruct
             ) {
                 continue;
             }
@@ -5907,7 +5976,7 @@ impl App {
         ui.add_space(4.0);
         let pk = if matches!(
             interceptor.status,
-            InterceptorStatus::Hit | InterceptorStatus::Miss
+            InterceptorStatus::Hit | InterceptorStatus::Miss | InterceptorStatus::SelfDestruct
         ) {
             interceptor.final_pk.unwrap_or(interceptor.hit_probability) as f32
         } else {
@@ -5922,7 +5991,7 @@ impl App {
         };
         let pk_label = if matches!(
             interceptor.status,
-            InterceptorStatus::Hit | InterceptorStatus::Miss
+            InterceptorStatus::Hit | InterceptorStatus::Miss | InterceptorStatus::SelfDestruct
         ) {
             format!("Final Pk: {:.0}%", pk * 100.0)
         } else {
@@ -5969,10 +6038,10 @@ impl App {
         ui.add_space(8.0);
         ui.separator();
 
-        // For completed intercepts (Hit/Miss), show snapshot data
+        // For completed intercepts (Hit/Miss/SelfDestruct), show snapshot data
         if matches!(
             interceptor.status,
-            InterceptorStatus::Hit | InterceptorStatus::Miss
+            InterceptorStatus::Hit | InterceptorStatus::Miss | InterceptorStatus::SelfDestruct
         ) {
             ui.label("Intercept Result");
 
@@ -5999,8 +6068,15 @@ impl App {
                     let reason_text = match interceptor.miss_reason {
                         MissReason::PkRoll => "Pk Roll Failed",
                         MissReason::DebrisDamage => "Debris Damage",
-                        MissReason::OffCourse => "Off Course",
+                        MissReason::OffCourse => {
+                            if interceptor.status == InterceptorStatus::SelfDestruct {
+                                "Passed CPA - Self-Destructed"
+                            } else {
+                                "Off Course"
+                            }
+                        }
                         MissReason::SeekerLost => "Seeker Lost",
+                        MissReason::BreakOff => "No Synchronized Geometry - Break-Off",
                         MissReason::None => {
                             if interceptor.status == InterceptorStatus::Hit {
                                 "N/A (Hit)"

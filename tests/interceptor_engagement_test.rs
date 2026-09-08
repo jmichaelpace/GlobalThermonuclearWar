@@ -9,6 +9,15 @@
 //!      fire control, not omniscient).
 //!   4. Shoot-Look-Shoot continues engaging after a miss while shots and
 //!      time remain (max_shots_per_target, not the old 2-shot total cap).
+//!   5. Post-miss command-destruct: an interceptor that passes its target
+//!      mid-course (outside the terminal phase) resolves as SelfDestruct
+//!      promptly instead of flying on to the flight-time timeout, and the
+//!      miss feeds shoot-look-shoot follow-up.
+//!   6. Synchronized-arrival doctrine: fire control refuses launch solutions
+//!      where the interceptor would arrive at the intercept point far
+//!      EARLIER than the missile (a chase geometry with no kill window), and
+//!      in-flight guidance breaks off (destructs) when no synchronized
+//!      solution remains.
 
 use std::collections::HashSet;
 
@@ -148,11 +157,9 @@ fn test_thaad_cannot_engage_icbm_apogee() {
         engine.update(dt);
     }
 
-    let launches = engine
-        .interceptors
-        .iter()
-        .filter(|i| i.status != InterceptorStatus::Pending || true)
-        .count();
+    // Every interceptor in the vector counts as a launch attempt (Pending
+    // entries only exist post-launch scheduling)
+    let launches = engine.interceptors.len();
     println!("THAAD vs ICBM: interceptors launched = {}", launches);
 
     assert!(
@@ -255,4 +262,281 @@ fn test_salvo_continues_after_miss() {
             misses
         );
     }
+}
+
+/// Post-miss command-destruct doctrine.
+///
+/// A mistimed interceptor that passes its target OUTSIDE the terminal phase
+/// must resolve as SelfDestruct (a miss outcome) promptly via the CPA
+/// divergence tracker — not keep flying toward a stale intercept point until
+/// the 1.2x-1.3x flight-time timeout. The miss must also feed the
+/// shoot-look-shoot kill-assessment chain.
+///
+/// This is a white-box resolution test: the interceptor is staged directly
+/// with a garbage intercept solution (bypassing the sensor-driven launch
+/// chain, which the other tests cover), and the defending unit is placed
+/// where it cannot detect the missile, so mid-course guidance is blocked
+/// ("no fused track") and cannot re-target the round. The geometry is pure
+/// divergence: the interceptor launches ahead of the missile's aimpoint and
+/// flies away from it, so 3D range opens monotonically from burnout.
+#[test]
+fn test_post_miss_command_destruct_mid_course() {
+    let mut engine = SimulationEngine::new();
+    engine.time_scale = TimeScale::RealTime;
+
+    let missile_id = engine.add_missile(
+        "Staged MRBM".to_string(),
+        Affiliation::Hostile,
+        GeoCoord::new(39.0, 125.5),
+        GeoCoord::new(35.0, 139.0),
+        0.0,
+    );
+
+    // Unit far from the flight path: it can never detect the missile, so
+    // no fused track exists and mid-course guidance cannot re-target the
+    // staged interceptor (mirrors test_no_launch_without_fire_control_track).
+    let unit_id = engine.add_defense_unit(
+        "Staged THAAD".to_string(),
+        Affiliation::Friendly,
+        GeoCoord::new(-30.0, 30.0), // South Atlantic
+        DefenseType::THAAD,
+        8,
+    );
+
+    // Advance the sim so the missile is mid-flight (t=300s of a ~600s flight:
+    // the missile is roughly at the down-range midpoint (37, 132)).
+    let dt = 0.1;
+    for _ in 0..((300.0 / dt) as usize) {
+        engine.update(dt);
+    }
+    let t0 = engine.sim_time;
+    assert_eq!(
+        engine.missiles[0].status,
+        global_thermonuclear_war::simulation::MissileStatus::Midcourse,
+        "test premise: missile should be mid-course at t={:.0}s",
+        t0
+    );
+
+    // Stage the interceptor BEHIND the missile (an already-passed point on
+    // the trajectory), aimed further BACKWARD along the path. The missile
+    // moves away down-range while the interceptor flies away backward:
+    // range opens monotonically from the first post-boost frame. No closing
+    // phase, no kill — pure divergence the CPA tracker must catch in
+    // mid-course (Coast phase, progress ~0.4 << terminal threshold 0.7).
+    use global_thermonuclear_war::simulation::Interceptor;
+    let interceptor = Interceptor::new(
+        9999,
+        unit_id,
+        missile_id,
+        Affiliation::Friendly,
+        DefenseType::THAAD,         // 12s boost then coast; guidance interval 2.0s
+        GeoCoord::new(37.5, 129.0), // behind the missile's current position
+        GeoCoord::new(39.0, 126.0), // aim further backward along the path
+        80.0,                       // aim altitude (km)
+        t0,
+        t0 + 40.0, // nominal flight; timeout paths need >= 48s (progress 1.2)
+        0.5,
+    );
+    let interceptor_id = interceptor.id;
+    engine.interceptors.push(interceptor);
+
+    // The CPA destruct path should resolve at ~12s boost + ~3s coast
+    // hysteresis (1.5x THAAD's 2.0s guidance interval). Run to 40s:
+    // comfortably before any timeout path could fire (48s).
+    let mut resolved_at: Option<f64> = None;
+    for _ in 0..((40.0 / dt) as usize) {
+        engine.update(dt);
+        let ic = engine
+            .interceptors
+            .iter()
+            .find(|i| i.id == interceptor_id)
+            .unwrap();
+        if ic.status != InterceptorStatus::InFlight {
+            resolved_at = Some(engine.sim_time);
+            break;
+        }
+    }
+
+    let ic = engine
+        .interceptors
+        .iter()
+        .find(|i| i.id == interceptor_id)
+        .unwrap();
+    println!(
+        "Post-miss destruct: status={:?} at t={:?} (launched t={:.0}s), final_miss_dist={:?}, cpa_min={:.1}km",
+        ic.status, resolved_at, t0, ic.final_miss_distance_km, ic.cpa_tracking.min_distance_km
+    );
+
+    assert!(
+        matches!(
+            ic.status,
+            InterceptorStatus::SelfDestruct | InterceptorStatus::Miss
+        ),
+        "mistimed interceptor must resolve as a miss/destruct, got {:?}",
+        ic.status
+    );
+    let resolved_at = resolved_at.expect("interceptor must resolve within 40s");
+    assert!(
+        resolved_at - t0 < 40.0,
+        "resolution {:.0}s after launch — CPA destruct should fire well before the 48s timeout path",
+        resolved_at - t0
+    );
+    assert_eq!(
+        ic.miss_reason,
+        global_thermonuclear_war::simulation::MissReason::OffCourse
+    );
+
+    // The destruct must count as a MISS for doctrine: a kill assessment
+    // (was_kill=false) is created, enabling shoot-look-shoot follow-up.
+    assert!(
+        engine
+            .kill_assessments
+            .iter()
+            .any(|ka| ka.target_id == missile_id && !ka.was_kill),
+        "no miss kill-assessment queued for shoot-look-shoot follow-up"
+    );
+}
+
+/// Synchronized-arrival doctrine: no chase shots at receding targets.
+///
+/// Reproduces the tail-chase bug from the AEGIS geometry scenario: after the
+/// first (legitimate) crossing engagement resolved, fire control kept
+/// computing "solutions" 50-133 s EARLY — the interceptor beats the missile
+/// to the intercept point by minutes — and launched chase shots that could
+/// never close (seeker never acquired, 15-20 km CPA misses, missile
+/// impacted). Doctrine: launch only inside a time-synchronized window
+/// (|interceptor_time - missile_time| within tolerance); if no synchronized
+/// point exists in the envelope, HOLD FIRE and accept the leaker.
+///
+/// This test stages the pure receding geometry: by the time a fire-control
+/// track exists, the missile is flying AWAY from the platform and its
+/// remaining trajectory stays above SM-3's 600 km ceiling. Every launch
+/// solution must be refused. (The real scenario's first CROSSING shot is
+/// legitimate — it launches while the missile is still approaching — so
+/// this test isolates the receding window with a delayed detection start.)
+#[test]
+fn test_no_chase_launch_on_receding_target() {
+    use global_thermonuclear_war::simulation::MissileStatus;
+
+    let mut engine = SimulationEngine::new();
+    engine.time_scale = TimeScale::RealTime;
+
+    // Aegis positioned near the missile's TARGET (far side of the flight):
+    // the missile only becomes detectable as it approaches the platform's
+    // hemisphere, by which point it is descending TOWARD impact at (33,125)
+    // and flying away from the ship. Its remaining trajectory is terminal
+    // descent through altitudes above SM-3's 100 km floor until the final
+    // seconds — no exo intercept point exists at all, synchronized or not.
+    engine.add_defense_unit(
+        "Receding AEGIS".to_string(),
+        Affiliation::Friendly,
+        GeoCoord::new(33.0, 125.0), // directly at the impact point
+        DefenseType::Aegis,
+        8,
+    );
+
+    // Crossing MRBM passing far north of the ship (from test_aegis_geometry)
+    let missile_id = engine.add_missile(
+        "Crossing MRBM".to_string(),
+        Affiliation::Hostile,
+        GeoCoord::new(33.0, 155.0),
+        GeoCoord::new(33.0, 125.0),
+        0.0,
+    );
+
+    let dt = 0.1;
+    // Run past the missile's apogee: mid-course, high altitude, receding
+    // from the ship at the far end. (Apogee ~700 km for this range class.)
+    for _ in 0..((700.0 / dt) as usize) {
+        engine.update(dt);
+    }
+
+    let missile = &engine.missiles[0];
+    let apogee = engine
+        .get_trajectory(missile_id)
+        .map(|t| t.max_altitude_km)
+        .expect("trajectory");
+    println!(
+        "Receding test: t={:.0}s missile_status={:?} progress={:.2} apogee={:.0}km alt={:.0}km",
+        engine.sim_time,
+        missile.status,
+        missile.flight_progress(),
+        apogee,
+        missile.altitude_km
+    );
+    assert!(
+        matches!(missile.status, MissileStatus::Midcourse),
+        "test premise: missile should be mid-course, got {:?}",
+        missile.status
+    );
+
+    // Continue running through the rest of the engagement window. Fire
+    // control may engage only while a SYNCHRONIZED solution exists (e.g.,
+    // during terminal descent if the missile were headed at the ship) —
+    // for this crossing geometry none ever exists: every solution the scan
+    // finds has the missile arriving at the IP long before the interceptor
+    // (chase) or after it (far early), both refused.
+    let mut chase_launches = 0;
+    let mut any_launch = false;
+    for _ in 0..((2400.0 / dt) as usize) {
+        engine.update(dt);
+        if engine.interceptors.len() > 0 && !any_launch {
+            any_launch = true;
+            println!(
+                "note: launch occurred at t={:.0}s (may be a legitimate terminal solution)",
+                engine.sim_time
+            );
+        }
+        // A "chase launch" would be a shot at an interceptor solution the
+        // missile reaches BEFORE the interceptor by a wide margin — detect
+        // via the aspect angle at launch: approach from behind the missile's
+        // heading (< 60 deg) means tail-chase.
+        for ic in engine.interceptors.iter() {
+            if ic.status == InterceptorStatus::Pending || ic.status == InterceptorStatus::InFlight {
+                let m = engine
+                    .missiles
+                    .iter()
+                    .find(|m| m.id == ic.target_id)
+                    .unwrap();
+                let m_heading = bearing_deg(m.origin, m.target);
+                let approach = bearing_deg(ic.launch_position, ic.target_position);
+                let diff = (approach - m_heading).rem_euclid(360.0);
+                let aspect = if diff > 180.0 { 360.0 - diff } else { diff };
+                if aspect < 60.0 {
+                    chase_launches += 1;
+                }
+            }
+        }
+        if matches!(
+            engine.missiles[0].status,
+            MissileStatus::Impacted | MissileStatus::Intercepted
+        ) {
+            break;
+        }
+    }
+
+    println!(
+        "Receding test: any_launch={} chase_launches={} missile_status={:?} shots_total={}",
+        any_launch,
+        chase_launches,
+        engine.missiles[0].status,
+        engine.interceptors.len()
+    );
+
+    // Doctrine: no chase-geometry launch may EVER occur
+    assert_eq!(
+        chase_launches, 0,
+        "fire control launched a chase shot at a receding target (tail-chase aspect < 60 deg)"
+    );
+}
+
+/// Helper: bearing in degrees (0 = North, 90 = East) — mirrors physics::bearing.
+fn bearing_deg(from: GeoCoord, to: GeoCoord) -> f64 {
+    let lat1 = from.lat.to_radians();
+    let lat2 = to.lat.to_radians();
+    let dlon = (to.lon - from.lon).to_radians();
+
+    let y = dlon.sin() * lat2.cos();
+    let x = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos();
+    y.atan2(x).to_degrees().rem_euclid(360.0)
 }

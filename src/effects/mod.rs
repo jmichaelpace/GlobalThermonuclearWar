@@ -4,9 +4,10 @@ use eframe::egui;
 /// Type of visual effect
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectType {
-    Impact,    // Missile impact explosion
-    Intercept, // Successful intercept
-    Debris,    // Debris cloud from intercept
+    Impact,       // Missile impact explosion
+    Intercept,    // Successful intercept
+    Debris,       // Debris cloud from intercept
+    SelfDestruct, // Interceptor flight-termination / command-destruct
 }
 
 /// A visual effect to render
@@ -21,9 +22,10 @@ pub struct VisualEffect {
 impl VisualEffect {
     pub fn new(position: GeoCoord, effect_type: EffectType, start_time: f64) -> Self {
         let duration = match effect_type {
-            EffectType::Impact => 3.0,    // 3 seconds
-            EffectType::Intercept => 2.0, // 2 seconds
-            EffectType::Debris => 2.5,    // 2.5 seconds
+            EffectType::Impact => 3.0,       // 3 seconds
+            EffectType::Intercept => 2.0,    // 2 seconds
+            EffectType::Debris => 2.5,       // 2.5 seconds
+            EffectType::SelfDestruct => 2.0, // 2 seconds
         };
         Self {
             position,
@@ -367,5 +369,86 @@ impl EffectsManager {
             smoke_radius,
             egui::Color32::from_rgba_unmultiplied(100, 100, 100, smoke_alpha),
         );
+    }
+
+    /// Render a command-destruct / flight-termination effect.
+    ///
+    /// Deliberately smaller and orange/amber (vs. the green intercept effect):
+    /// a self-destruct destroys the interceptor itself, not a target. A brief
+    /// flash, a modest expanding ring, and a few gray fragments falling.
+    pub fn render_self_destruct_effect(painter: &egui::Painter, pos: egui::Pos2, progress: f64) {
+        let progress = progress as f32;
+
+        // Initial flash (first 15%)
+        if progress < 0.15 {
+            let flash_progress = progress / 0.15;
+            let flash_size = 12.0 + flash_progress * 8.0;
+            let flash_alpha = ((1.0 - flash_progress) * 230.0) as u8;
+            painter.circle_filled(
+                pos,
+                flash_size,
+                egui::Color32::from_rgba_unmultiplied(255, 220, 160, flash_alpha),
+            );
+        }
+
+        // Single expanding amber ring
+        let ring_progress = (progress / 0.6).clamp(0.0, 1.0);
+        if ring_progress > 0.0 {
+            let radius = 8.0 + ring_progress * 25.0;
+            let alpha = ((1.0 - ring_progress) * 180.0) as u8;
+            let width = 3.0 - ring_progress * 2.0;
+            painter.circle_stroke(
+                pos,
+                radius,
+                egui::Stroke::new(
+                    width.max(0.5),
+                    egui::Color32::from_rgba_unmultiplied(255, 170, 60, alpha),
+                ),
+            );
+        }
+
+        // Small fireball (first 35%)
+        if progress < 0.35 {
+            let fireball_progress = progress / 0.35;
+            let fireball_size = 8.0 + fireball_progress * 10.0;
+            let alpha = ((1.0 - fireball_progress) * 170.0) as u8;
+            painter.circle_filled(
+                pos,
+                fireball_size,
+                egui::Color32::from_rgba_unmultiplied(255, 160, 80, alpha),
+            );
+        }
+
+        // A few fragments falling (destroyed interceptor debris)
+        let num_fragments = 6;
+        for i in 0..num_fragments {
+            let angle = (i as f32 / num_fragments as f32) * std::f32::consts::TAU;
+            let speed = 15.0 + (i as f32 * 0.8).sin().abs() * 10.0;
+            let fragment_progress = (progress * 1.3).clamp(0.0, 1.0);
+            let distance = speed * fragment_progress;
+            let gravity = fragment_progress * fragment_progress * 25.0;
+            let debris_x = pos.x + angle.cos() * distance;
+            let debris_y = pos.y + angle.sin() * distance + gravity;
+
+            let alpha = ((1.0 - fragment_progress) * 200.0) as u8;
+            let size = 1.5 + (i as f32 * 0.5).sin().abs() * 1.5;
+            painter.circle_filled(
+                egui::pos2(debris_x, debris_y),
+                size * (1.0 - fragment_progress * 0.4),
+                egui::Color32::from_rgba_unmultiplied(180, 180, 180, alpha),
+            );
+        }
+
+        // Fading smoke puff
+        if progress > 0.25 {
+            let smoke_progress = ((progress - 0.25) / 0.75).clamp(0.0, 1.0);
+            let smoke_alpha = ((1.0 - smoke_progress * 0.6) * 70.0) as u8;
+            let smoke_size = 8.0 + smoke_progress * 12.0;
+            painter.circle_filled(
+                pos,
+                smoke_size,
+                egui::Color32::from_rgba_unmultiplied(120, 120, 120, smoke_alpha),
+            );
+        }
     }
 }

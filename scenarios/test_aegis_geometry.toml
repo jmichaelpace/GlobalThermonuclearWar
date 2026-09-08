@@ -39,8 +39,11 @@ launch_delay_sec = 10.0
 # ============================================================================
 # CROSSING ENGAGEMENT (missile passing by the platform)
 # Interceptor must lead the target significantly
-# Shahab-3 profile: ~3,070 km range -> ~702 km apogee; crossing geometry
-# legitimately misses (gimbal-limited terminal homing) - that is the test
+# Shahab-3 profile: ~3,070 km range -> ~702 km apogee; crossing geometry gives
+# a near-head-on PIP while the missile is still approaching the platform's
+# meridian. Fire control only launches inside time-synchronized windows; no
+# chase shots are fired after the missile passes (see
+# docs/platform-intercept-geometry.md "Synchronized arrival").
 # ============================================================================
 
 [[missiles]]

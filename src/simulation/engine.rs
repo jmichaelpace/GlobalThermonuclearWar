@@ -253,6 +253,9 @@ pub struct SimulationEngine {
     pub debris_clouds: Vec<DebrisCloud>,
     /// Kill assessments in progress (shoot-look-shoot doctrine)
     pub kill_assessments: Vec<KillAssessment>,
+    /// Interceptors already given a kill assessment (prevent duplicate
+    /// assessments across sub-steps during the 3s assessment window)
+    assessed_interceptors: std::collections::HashSet<EntityId>,
 }
 
 impl SimulationEngine {
@@ -336,6 +339,7 @@ impl SimulationEngine {
             pending_events: Vec::new(),
             debris_clouds: Vec::new(),
             kill_assessments: Vec::new(),
+            assessed_interceptors: std::collections::HashSet::new(),
         }
     }
 
@@ -889,11 +893,15 @@ impl SimulationEngine {
                 // ITERATIVE TIME-SYNCHRONIZED INTERCEPT SOLUTION
                 // Find a time T where both interceptor and missile arrive at
                 // the same point on the sensor-derived profile.
+                // The averaging step halves the sync error per iteration, so
+                // 25 iterations comfortably closes the tolerance even from a
+                // poor initial guess (launch-time sync estimate).
                 let mut time_to_intercept = remaining_flight_time;
                 let mut best_pos = fused_track.estimated_position;
                 let mut best_alt = fused_track.estimated_altitude;
+                let mut converged_sync = false;
 
-                for _iteration in 0..5 {
+                for _iteration in 0..25 {
                     // Project missile position at current time estimate
                     let future_progress = (current_progress
                         + time_to_intercept / converged.flight_time_sec.max(1.0))
@@ -923,9 +931,11 @@ impl SimulationEngine {
                     best_pos = projected_pos;
                     best_alt = projected_alt;
 
-                    // Check for convergence (times match within 1 second)
+                    // Check for convergence (times match within 5 s — well
+                    // inside the seeker's terminal homing budget)
                     let time_diff = (interceptor_time_to_point - time_to_intercept).abs();
-                    if time_diff < 1.0 {
+                    if time_diff < 5.0 {
+                        converged_sync = true;
                         break; // Converged - times are synchronized
                     }
 
@@ -935,6 +945,27 @@ impl SimulationEngine {
 
                     // Bound the time estimate to reasonable values
                     time_to_intercept = time_to_intercept.clamp(2.0, remaining_flight_time * 2.0);
+                }
+
+                // SYNCHRONIZATION GATE for re-solves (mirrors the symmetric
+                // launch gate): if the iteration did not converge, no point
+                // on the estimated profile is reachable in sync with the
+                // target. Previously the last (unconverged) iteration was
+                // applied anyway, deferring the intercept point down-range
+                // chase-style on every update — a launched interceptor kept
+                // chasing a receding target it could never close with.
+                if !converged_sync {
+                    if std::env::var("GTW_TRACE_GUIDANCE").is_ok() {
+                        eprintln!(
+                            "[GUIDANCE SYNC FAIL] {:?} -> target {}: 5 iterations did not converge (last t_est={:.1}s, remaining={:.1}s, prog={:.2})",
+                            interceptor.defense_type,
+                            interceptor.target_id,
+                            time_to_intercept,
+                            remaining_flight_time,
+                            current_progress
+                        );
+                    }
+                    return Err(Some("No time-synchronized intercept solution".to_string()));
                 }
 
                 // Check if correction is significant enough to warrant an update
@@ -1001,7 +1032,55 @@ impl SimulationEngine {
         // Apply guidance updates and log success events
         // Note: Pk will be recalculated in the Pk pass below using the updated target_position,
         // so improved guidance leads to improved Pk (better prediction_factor and timing_factor)
+        const NO_SYNC_REASON: &str = "No time-synchronized intercept solution";
+        // Break-off doctrine: once guidance has failed to find ANY
+        // time-synchronized solution for this many consecutive update
+        // cycles, the engagement has no remaining kill geometry — the
+        // interceptor is chasing a target it can never rendezvous with.
+        // Real doctrine destroys the round rather than let it fly on
+        // uncontrolled; the round's kill assessment (miss) feeds SLS.
+        const UNSYNCED_BREAKOFF_CYCLES: u32 = 3;
         for (idx, interceptor) in self.interceptors.iter_mut().enumerate() {
+            // Track consecutive no-sync failures. Err(None) means "waiting
+            // for next update interval" (not a geometry verdict) and must
+            // NOT reset the streak; other blocked reasons — stale track,
+            // quality — are transient sensor states, not geometry verdicts,
+            // and do reset it.
+            match &guidance_results[idx] {
+                Ok(_) => interceptor.consecutive_unsynced_guidance_cycles = 0,
+                Err(Some(reason)) if reason == NO_SYNC_REASON => {
+                    interceptor.consecutive_unsynced_guidance_cycles += 1;
+                }
+                Err(Some(_)) => interceptor.consecutive_unsynced_guidance_cycles = 0,
+                Err(None) => {} // Waiting for next interval — streak unchanged
+            }
+
+            // ENGAGEMENT BREAK-OFF (command-destruct). Prewarn once before
+            // destruct so the event log shows the cause.
+            if interceptor.status == InterceptorStatus::InFlight
+                && interceptor.consecutive_unsynced_guidance_cycles >= UNSYNCED_BREAKOFF_CYCLES
+            {
+                let (_, target_name, _) = &interceptor_info[idx];
+                eprintln!(
+                    "[BREAK-OFF] {} -> {}: no synchronized intercept solution for {} guidance cycles - command destruct",
+                    interceptor.defense_type.name(),
+                    target_name,
+                    interceptor.consecutive_unsynced_guidance_cycles
+                );
+                interceptor.status = InterceptorStatus::SelfDestruct;
+                interceptor.miss_reason = MissReason::BreakOff;
+                // Miss distance: the true CPA if the tracker has sampled
+                // (post-boost); None if break-off happened during boost
+                // before any range sample (f64::MAX sentinel not yet replaced)
+                if interceptor.cpa_tracking.min_distance_km < f64::MAX {
+                    interceptor.final_miss_distance_km =
+                        Some(interceptor.cpa_tracking.min_distance_km);
+                }
+                interceptor.final_pk = Some(0.0);
+                // Feed SLS follow-up exactly like a CPA miss
+                continue;
+            }
+
             if let Some((new_pos, new_alt, correction_km)) = guidance_updates[idx] {
                 // Cap maximum correction based on remaining distance to intercept
                 // Early in flight: allow larger corrections since track is still being refined
@@ -1327,47 +1406,46 @@ impl SimulationEngine {
                 (h.powi(2) + v.powi(2)).sqrt()
             };
 
-            // Detect CPA: distance increasing consistently.
-            // Use hysteresis to avoid false CPA triggers from momentary distance
-            // fluctuations (terminal altitude corrections, PN heading changes).
-            // Runs regardless of seeker state: resolve_intercepts now consumes
-            // ONLY this confirmed flag, so blind flybys must also detect CPA
-            // to resolve as misses instead of flying on to the 1.2x timeout.
-            if in_terminal && !interceptor.passed_cpa {
-                // Tolerance: distance must increase by at least 0.1km to count as "increasing"
-                let distance_tolerance_km = 0.1;
-
-                if interceptor.previous_distance_to_target_km < f64::MAX {
-                    if current_distance_to_target
-                        > interceptor.previous_distance_to_target_km + distance_tolerance_km
-                    {
-                        // Distance is increasing - increment counter
-                        interceptor.cpa_increasing_frames += 1;
-
-                        // Require 10 consecutive frames of increasing distance before declaring CPA
-                        // At high closing speeds, this is ~0.1-0.2 seconds of consistent divergence
-                        const CPA_HYSTERESIS_FRAMES: u32 = 10;
-
-                        if interceptor.cpa_increasing_frames >= CPA_HYSTERESIS_FRAMES {
-                            // CPA confirmed - set flag permanently and store current heading
-                            interceptor.passed_cpa = true;
-                            // Store the heading toward the guidance target
-                            interceptor.heading_at_cpa =
-                                bearing(interceptor.position, guidance_target);
-                            eprintln!("[CPA] {:?} passed CPA at {:.3}km from target, locking heading={:.1}° (after {} frames)",
-                                     interceptor.defense_type, interceptor.previous_distance_to_target_km,
-                                     interceptor.heading_at_cpa, interceptor.cpa_increasing_frames);
-                        }
-                    } else if current_distance_to_target
-                        < interceptor.previous_distance_to_target_km - distance_tolerance_km
-                    {
-                        // Distance is decreasing - reset counter (still closing)
-                        interceptor.cpa_increasing_frames = 0;
-                    }
-                    // If distance is within tolerance, don't change counter (neutral)
+            // Detect CPA: range opening consistently, with TIME-based hysteresis
+            // to avoid false triggers from momentary distance fluctuations
+            // (terminal altitude corrections, PN heading changes, mid-course
+            // re-solves). Runs in Coast AND Terminal phases, not just terminal:
+            // a mistimed interceptor can pass the target mid-course and fly on
+            // toward a stale intercept point for the rest of its flight otherwise.
+            // resolve_intercepts consumes ONLY this confirmed flag (single
+            // owner of CPA state — see AGENTS.md).
+            //
+            // Hysteresis by phase:
+            //   - Coast: 1.5x the mid-course guidance update interval, so fire
+            //     control gets a full re-solve opportunity (the intercept point
+            //     legitimately moves as the track converges) before any miss is
+            //     declared. Boost is skipped: geometry under thrust is not yet
+            //     meaningful for miss assessment.
+            //   - Terminal: fixed 0.15s (~the old 10-frame hysteresis at
+            //     precision sub-stepping) — resolve misses promptly.
+            if !interceptor.cpa_tracking.passed_cpa && interceptor.phase != InterceptorPhase::Boost
+            {
+                let hysteresis_sec = if in_terminal {
+                    0.15
+                } else {
+                    // Coast: allow one mid-course re-solve cycle + margin
+                    let guidance_interval = interceptor_configs_cache[idx]
+                        .2
+                        .update_interval_sec
+                        .max(0.5);
+                    guidance_interval * 1.5
+                };
+                let guidance_heading = bearing(interceptor.position, guidance_target);
+                if interceptor.cpa_tracking.update(
+                    current_distance_to_target,
+                    guidance_heading,
+                    sim_dt,
+                    hysteresis_sec,
+                ) {
+                    eprintln!("[CPA] {:?} passed CPA at min {:.3}km from target, locking heading={:.1}° (after {:.1}s divergence)",
+                             interceptor.defense_type, interceptor.cpa_tracking.min_distance_km,
+                             interceptor.cpa_tracking.heading_at_cpa_deg, interceptor.cpa_tracking.divergence_duration_sec);
                 }
-                // Update distance tracking for next frame
-                interceptor.previous_distance_to_target_km = current_distance_to_target;
             }
 
             // TERMINAL GUIDANCE
@@ -1384,10 +1462,10 @@ impl SimulationEngine {
             );
             let is_exo_altitude = interceptor.altitude_km > 100.0;
 
-            let heading_to_target = if interceptor.passed_cpa {
+            let heading_to_target = if interceptor.cpa_tracking.passed_cpa {
                 // We've passed CPA - maintain the exact heading we had when CPA was detected
                 // Don't recalculate - use the stored value to prevent flip-flopping
-                interceptor.heading_at_cpa
+                interceptor.cpa_tracking.heading_at_cpa_deg
             } else if is_exo_system && is_exo_altitude && !in_terminal {
                 // LAMBERT GUIDANCE for exo-atmospheric midcourse
                 // Computes optimal trajectory to intercept point using orbital mechanics
@@ -2403,10 +2481,20 @@ impl SimulationEngine {
             .altitude_envelope
             .max_engagement_altitude_km;
 
-        // Scan future progress values for the EARLIEST intercept both parties
-        // can make: interceptor arrives no later than the missile (0.5 s
-        // sub-step quantization margin; the old code allowed +5 s late which
-        // guaranteed misses at 0.1 km kill radius).
+        // Scan future progress values for a TIME-SYNCHRONIZED intercept:
+        // interceptor and missile must arrive at the candidate point together
+        // (± tolerance). The original gate only forbade LATE arrival; early
+        // arrival was unbounded, on the theory that mid-course guidance would
+        // re-solve the intercept point down-range. That fails for receding
+        // targets: the only altitude-legal points lie far behind the missile,
+        // no synchronized solution ever exists, and fire control launched
+        // 50-133 s-early "solutions" — provable tail-chases that burned the
+        // magazine and could not close (the seeker never saw the target).
+        // Doctrine: launch only inside a time-synchronized window; ballistic
+        // kill vehicles cannot loiter, so "arrive early and wait" is not a
+        // valid engagement mode. When no synchronized point exists in the
+        // envelope, FCS holds fire and the target is a leaker for this
+        // platform (accepted risk / hand-off).
         let scan_steps = 60;
         let progress_step = (1.0 - progress).min(0.98) / scan_steps as f64;
 
@@ -2437,9 +2525,20 @@ impl SimulationEngine {
             let interceptor_time =
                 self.calculate_flight_time(unit.defense_type, unit.position, pos, alt);
 
-            // Interceptor must arrive BEFORE the missile (0.5 s quantization margin)
+            // SYMMETRIC ARRIVAL GATE. Late: forbidden outright (0.5s sub-step
+            // quantization margin). Early: forbidden beyond a tolerance that
+            // scales with the missile's own travel time — the converged
+            // trajectory estimate is coarse early in the threat's flight, and
+            // mid-course guidance can legitimately refine the intercept point
+            // by a modest fraction of the engagement timeline. A chase shot
+            // where the interceptor beats the missile by minutes is not
+            // refinable into a kill — refuse it.
+            let early_tolerance = (missile_time * 0.10).max(5.0);
             if interceptor_time > missile_time + 0.5 {
-                continue;
+                continue; // Interceptor arrives late — invalid
+            }
+            if missile_time - interceptor_time > early_tolerance {
+                continue; // Interceptor arrives far early — no synchronized window
             }
 
             // Earliest feasible point wins (maximizes time for follow-up shots)
@@ -2647,34 +2746,43 @@ impl SimulationEngine {
                 );
             }
 
+            // POST-MISS COMMAND-DESTRUCT (all phases, doctrine: FTS/command-destruct)
+            // Hit-to-kill interceptors cannot turn around. Once the guidance-side
+            // CPA tracker (update_interceptors, SOLE owner of CPA state) confirms
+            // we have passed the target and are outside the kill radius, the round
+            // is expended: real doctrine is flight termination / self-destruct at
+            // the safest available point rather than letting a live warhead fly
+            // on uncontrolled. Previously miss resolution was gated to the
+            // terminal phase (progress >= 0.7), so a mistimed interceptor that
+            // passed the target mid-course kept flying toward a stale intercept
+            // point until the 1.2x-1.3x flight-time timeout — visibly diverging
+            // the whole time. The kill assessment (was_kill=false) feeds
+            // shoot-look-shoot follow-up exactly as a terminal miss does.
+            if interceptor.cpa_tracking.passed_cpa && distance_3d > kill_radius_km {
+                let cpa_distance = interceptor.cpa_tracking.min_distance_km;
+                let missile_name = missile_names
+                    .get(&target_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("Unknown");
+                eprintln!("[INTERCEPT] {} -> {} | MISS | CPA={:.3}km | kill_radius={:.3}km | destruct at progress={:.2} | seeker={}",
+                         interceptor.defense_type.name(), missile_name, cpa_distance, kill_radius_km, progress,
+                         if interceptor.seeker_acquired { "acquired" } else { "NOT acquired" });
+                interceptor.status = InterceptorStatus::SelfDestruct;
+                interceptor.miss_reason = MissReason::OffCourse;
+                // Miss distance: the true CPA if the tracker has sampled
+                // (post-boost); None if resolution happened during boost
+                // before any range sample (f64::MAX sentinel not yet replaced)
+                if interceptor.cpa_tracking.min_distance_km < f64::MAX {
+                    interceptor.final_miss_distance_km =
+                        Some(interceptor.cpa_tracking.min_distance_km);
+                }
+                interceptor.final_pk = Some(0.0);
+                just_resolved.push(target_id);
+                continue;
+            }
+
             // Only attempt intercept against the ASSIGNED target
             if in_terminal {
-                // CLOSEST POINT OF APPROACH (CPA) RESOLUTION
-                // Hit-to-kill interceptors can't turn around. The guidance-side
-                // tracker (update_interceptors) is the SOLE owner of CPA state:
-                // it uses 10-frame hysteresis to filter terminal-maneuver
-                // transients before setting passed_cpa. Here we only consume the
-                // confirmed flag — previously resolve_intercepts ran its own
-                // single-frame check on the same shared field, declaring misses
-                // on transients the hysteresis was designed to filter.
-                if interceptor.passed_cpa && distance_3d > kill_radius_km {
-                    // We've passed CPA and missed the kill radius - immediate miss
-                    let cpa_distance = interceptor.previous_distance_to_target_km;
-                    let missile_name = missile_names
-                        .get(&target_id)
-                        .map(|s| s.as_str())
-                        .unwrap_or("Unknown");
-                    eprintln!("[INTERCEPT] {} -> {} | MISS | CPA={:.3}km | kill_radius={:.3}km | seeker={}",
-                             interceptor.defense_type.name(), missile_name, cpa_distance, kill_radius_km,
-                             if interceptor.seeker_acquired { "acquired" } else { "NOT acquired" });
-                    interceptor.status = InterceptorStatus::Miss;
-                    interceptor.miss_reason = MissReason::OffCourse;
-                    interceptor.final_miss_distance_km = Some(cpa_distance);
-                    interceptor.final_pk = Some(0.0);
-                    just_resolved.push(target_id);
-                    continue;
-                }
-
                 // Seeker acquisition factor: if seeker hasn't acquired, Pk is severely reduced
                 // Interceptor is essentially flying blind without active seeker track
                 let seeker_factor = if interceptor.seeker_acquired {
@@ -2773,20 +2881,40 @@ impl SimulationEngine {
             });
         }
 
-        // Create kill assessments for both hits and misses
+        // Create kill assessments for hits and misses (once per interceptor).
+        // SelfDestruct with miss_reason OffCourse is the post-miss CPA
+        // command-destruct: a MISS outcome for doctrine purposes (feeds
+        // shoot-look-shoot follow-up) — the round was destroyed precisely
+        // because it could no longer kill the target. SelfDestruct from
+        // other paths (target already destroyed/impacted) leaves
+        // miss_reason = None and must NOT queue a follow-up — the threat
+        // is gone. `assessed_interceptors` prevents re-pushing an assessment
+        // every sub-step for the 3s assessment window (previously this loop
+        // duplicated one assessment per update call).
         for interceptor in &self.interceptors {
+            if self.assessed_interceptors.contains(&interceptor.id) {
+                continue;
+            }
             if interceptor.status == InterceptorStatus::Hit {
                 self.kill_assessments.push(KillAssessment::new(
                     interceptor.target_id,
                     self.sim_time,
                     true, // Was a hit
                 ));
-            } else if interceptor.status == InterceptorStatus::Miss {
+                self.assessed_interceptors.insert(interceptor.id);
+            } else if interceptor.status == InterceptorStatus::Miss
+                || (interceptor.status == InterceptorStatus::SelfDestruct
+                    && matches!(
+                        interceptor.miss_reason,
+                        MissReason::OffCourse | MissReason::BreakOff
+                    ))
+            {
                 self.kill_assessments.push(KillAssessment::new(
                     interceptor.target_id,
                     self.sim_time,
                     false, // Was a miss
                 ));
+                self.assessed_interceptors.insert(interceptor.id);
             }
         }
 
@@ -2938,6 +3066,7 @@ impl SimulationEngine {
         self.detection = DetectionSystem::new();
         self.debris_clouds.clear();
         self.kill_assessments.clear();
+        self.assessed_interceptors.clear();
         self.next_id = 1;
     }
 

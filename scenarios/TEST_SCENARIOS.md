@@ -20,7 +20,7 @@ Apogee values below are computed from the missile config:
 | `test_arrow3.toml` | Arrow 3 + Green Pine | 100-1000 km alt (exo), 2,400 km flyout, ~3.0 km/s | Shahab-3 x2, RS-26 Rubezh (439-695 km apogee) | Exo-atmospheric intercepts at apogee/midcourse |
 | `test_davids_sling.toml` | David's Sling + EL/M-2084 | 2-15 km alt, 300 km range, 2.55 km/s | Iskander-M x2, Shahab-3 (72-265 km apogee) | Terminal-window engagement (tiny window vs MRBM — misses expected) |
 | `test_s400.toml` | S-400 + Big Bird/Grave Stone | 40N6: 0.01-30 km alt, 400 km range, 2.1 km/s | Iskander-M, Shahab-3, Sejjil, RS-26 Rubezh | Terminal-only vs SRBM; high-altitude refusals expected (40N6 is a SAM, not a midcourse BMD interceptor) |
-| `test_aegis_geometry.toml` | AEGIS + SPY-1D | 100-600 km alt (exo) | Shahab-3 x3 (#HEAD-ON / #CROSSING / #OBLIQUE) | Guidance geometry: head-on engages, crossing legitimately misses (gimbal-limited terminal homing) |
+| `test_aegis_geometry.toml` | AEGIS + SPY-1D | 100-600 km alt (exo) | Shahab-3 x3 (#HEAD-ON / #CROSSING / #OBLIQUE) | Guidance geometry: head-on/crossing/oblique PIP lead; time-synchronized launch windows (no chase shots on receding targets) |
 
 ## Sensor Tests (Radar Only - No Interceptors)
 
@@ -83,7 +83,7 @@ Apogee values below are computed from the missile config:
 - **Iron Dome**: Grad rockets at 7-9 km apogee — the only rocket-class test that actually works
 - **David's Sling**: Tiny terminal windows vs 72-265 km apogees — misses/refusals expected vs the MRBM
 - **S-400**: Iskander terminal engagement; Shahab-3/Sejjil/RS-26 refused above 30 km (realistic SAM limits)
-- **AEGIS geometry**: HEAD-ON engages; CROSSING legitimately misses; OBLIQUE partial-lead
+- **AEGIS geometry**: HEAD-ON engages; CROSSING engages while the missile is still approaching (near-head-on PIP) and is NOT chased after it passes — fire control only launches inside time-synchronized windows (see `docs/platform-intercept-geometry.md`); OBLIQUE partial-lead
 
 ### Sensor Tests:
 - **Long-range radars (3000-4000 km nominal)**: Detect ICBMs across their arcs; quality degrades past nominal
