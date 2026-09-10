@@ -2,11 +2,11 @@ use crate::effects::EffectType;
 use crate::map::GeoCoord;
 use crate::simulation::{
     haversine_distance, Affiliation, DefenseType, DefenseUnit, EntityId, Interceptor,
-    InterceptorStatus, Missile, MissileStatus, SimEventType,
+    InterceptorStatus, MissReason, Missile, MissileStatus, SimEventType,
 };
 use std::collections::HashMap;
 
-/// Detailed information about a successful intercept
+/// Detailed information about an intercept attempt (hit or miss)
 #[derive(Clone, Debug)]
 pub struct InterceptResult {
     pub id: EntityId,
@@ -23,6 +23,14 @@ pub struct InterceptResult {
     pub closure_speed_km_s: f64,
     pub target_velocity_km_s: f64,
     pub interceptor_velocity_km_s: f64,
+    /// Whether the attempt killed the target
+    pub was_hit: bool,
+    /// Pk at the moment of the intercept attempt (None if not resolved)
+    pub final_pk: Option<f64>,
+    /// 3D miss distance at the attempt (None for hits / not resolved)
+    pub miss_distance_km: Option<f64>,
+    /// Why the attempt missed (None for hits)
+    pub miss_reason: Option<MissReason>,
 }
 
 /// Event types for the event log
@@ -111,6 +119,9 @@ pub struct SimEvent {
 pub struct EventLog {
     pub events: Vec<SimEvent>,
     pub max_events: usize,
+    /// Total events ever added (monotonic; survives the max_events cap so
+    /// consumers can reliably diff for "new events since last frame").
+    pub events_added: u64,
 }
 
 impl EventLog {
@@ -118,11 +129,13 @@ impl EventLog {
         Self {
             events: Vec::new(),
             max_events: 100,
+            events_added: 0,
         }
     }
 
     pub fn add(&mut self, time: f64, event_type: EventType) {
         self.events.push(SimEvent { time, event_type });
+        self.events_added += 1;
         if self.events.len() > self.max_events {
             self.events.remove(0);
         }
@@ -345,6 +358,10 @@ impl EventTracker {
                         closure_speed_km_s: closure_speed,
                         target_velocity_km_s: target_velocity,
                         interceptor_velocity_km_s: interceptor.current_velocity_km_s,
+                        was_hit: true,
+                        final_pk: interceptor.final_pk,
+                        miss_distance_km: interceptor.final_miss_distance_km,
+                        miss_reason: None,
                     });
 
                     // Request intercept visual effect at actual intercept location
@@ -360,9 +377,42 @@ impl EventTracker {
                     self.event_log.add(
                         sim_time,
                         EventType::InterceptMiss {
-                            target: target_name,
+                            target: target_name.clone(),
                         },
                     );
+
+                    // Record the failed attempt as an intercept result for BDA
+                    let unit_name = defense_units
+                        .iter()
+                        .find(|u| u.id == interceptor.launcher_id)
+                        .map(|u| u.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let horizontal_dist = haversine_distance(
+                        interceptor.launch_position,
+                        interceptor.target_position,
+                    );
+                    let altitude_diff = interceptor.target_altitude_km;
+                    let distance_3d = (horizontal_dist.powi(2) + altitude_diff.powi(2)).sqrt();
+                    self.intercept_results.push(InterceptResult {
+                        id: interceptor.id,
+                        time: sim_time,
+                        interceptor_type: interceptor_type_fn(interceptor.defense_type),
+                        defense_unit_name: unit_name,
+                        defense_type: interceptor.defense_type,
+                        target_name,
+                        intercept_position: interceptor.position,
+                        intercept_altitude_km: interceptor.altitude_km,
+                        launch_position: interceptor.launch_position,
+                        distance_from_platform_km: distance_3d,
+                        flight_time_sec: interceptor.current_flight_time,
+                        closure_speed_km_s: interceptor.current_velocity_km_s,
+                        target_velocity_km_s: 0.0,
+                        interceptor_velocity_km_s: interceptor.current_velocity_km_s,
+                        was_hit: false,
+                        final_pk: interceptor.final_pk,
+                        miss_distance_km: interceptor.final_miss_distance_km,
+                        miss_reason: Some(interceptor.miss_reason),
+                    });
                 }
                 // Post-miss command-destruct (FTS doctrine): the CPA tracker
                 // confirmed the interceptor passed the target outside kill
@@ -376,7 +426,7 @@ impl EventTracker {
                     self.event_log.add(
                         sim_time,
                         EventType::InterceptorSelfDestruct {
-                            target: target_name,
+                            target: target_name.clone(),
                         },
                     );
                     // Command-destruct visual effect at the interceptor's
@@ -384,6 +434,42 @@ impl EventTracker {
                     effects.push(EffectRequest {
                         position: interceptor.position,
                         effect_type: EffectType::SelfDestruct,
+                    });
+
+                    // Record the command-destruct as a failed attempt for BDA.
+                    // Self-destruct is fired *after* a confirmed miss (FTS
+                    // doctrine), so the miss distance/reason describe the
+                    // passed-CPA geometry.
+                    let unit_name = defense_units
+                        .iter()
+                        .find(|u| u.id == interceptor.launcher_id)
+                        .map(|u| u.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let horizontal_dist = haversine_distance(
+                        interceptor.launch_position,
+                        interceptor.target_position,
+                    );
+                    let altitude_diff = interceptor.target_altitude_km;
+                    let distance_3d = (horizontal_dist.powi(2) + altitude_diff.powi(2)).sqrt();
+                    self.intercept_results.push(InterceptResult {
+                        id: interceptor.id,
+                        time: sim_time,
+                        interceptor_type: interceptor_type_fn(interceptor.defense_type),
+                        defense_unit_name: unit_name,
+                        defense_type: interceptor.defense_type,
+                        target_name,
+                        intercept_position: interceptor.position,
+                        intercept_altitude_km: interceptor.altitude_km,
+                        launch_position: interceptor.launch_position,
+                        distance_from_platform_km: distance_3d,
+                        flight_time_sec: interceptor.current_flight_time,
+                        closure_speed_km_s: interceptor.current_velocity_km_s,
+                        target_velocity_km_s: 0.0,
+                        interceptor_velocity_km_s: interceptor.current_velocity_km_s,
+                        was_hit: false,
+                        final_pk: interceptor.final_pk,
+                        miss_distance_km: interceptor.final_miss_distance_km,
+                        miss_reason: Some(interceptor.miss_reason),
                     });
                 }
                 _ => {}
@@ -403,4 +489,212 @@ pub fn format_sim_time(time: f64) -> String {
     let minutes = total_secs / 60;
     let seconds = total_secs % 60;
     format!("{:02}:{:02}", minutes, seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::GeoCoord;
+    use crate::simulation::{DefenseType, InterceptorPhase};
+
+    /// Build a minimal interceptor with overridable status/Pk/miss data.
+    fn make_interceptor(id: EntityId, status: InterceptorStatus) -> Interceptor {
+        let mut icpt = Interceptor::new(
+            id,
+            9001,
+            100,
+            Affiliation::Friendly,
+            DefenseType::THAAD,
+            GeoCoord {
+                lat: 35.0,
+                lon: 45.0,
+            },
+            GeoCoord {
+                lat: 36.0,
+                lon: 46.0,
+            },
+            80.0,
+            0.0,
+            60.0,
+            1.0,
+        );
+        icpt.status = status;
+        icpt.phase = InterceptorPhase::Terminal;
+        icpt.final_pk = Some(0.72);
+        icpt.final_miss_distance_km = Some(0.35);
+        icpt.miss_reason = MissReason::PkRoll;
+        icpt
+    }
+
+    /// A defense unit so unit-name lookups resolve (id matches launcher_id).
+    fn make_defense_unit() -> DefenseUnit {
+        DefenseUnit::new(
+            9001,
+            "Test Battery".to_string(),
+            Affiliation::Friendly,
+            GeoCoord {
+                lat: 35.0,
+                lon: 45.0,
+            },
+            DefenseType::THAAD,
+            8,
+        )
+    }
+
+    /// A hostile missile so target-name lookups resolve (id matches target_id).
+    fn make_missile() -> Missile {
+        Missile::new(
+            100,
+            "Test Missile".to_string(),
+            Affiliation::Hostile,
+            GeoCoord {
+                lat: 37.0,
+                lon: 47.0,
+            },
+            GeoCoord {
+                lat: 38.0,
+                lon: 48.0,
+            },
+            600.0,
+        )
+    }
+
+    /// InFlight -> Hit transition records a hit result with Pk attached.
+    #[test]
+    fn test_hit_records_result() {
+        let mut tracker = EventTracker::new();
+        let missile = make_missile();
+        let unit = make_defense_unit();
+
+        // First frame: interceptor observed in flight (records state)
+        let icpt = make_interceptor(1, InterceptorStatus::InFlight);
+        tracker.check_for_events(10.0, &[missile.clone()], &[icpt], &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        // Second frame: transition to Hit
+        let mut icpt = make_interceptor(1, InterceptorStatus::Hit);
+        icpt.current_flight_time = 55.0;
+        icpt.current_velocity_km_s = 2.8;
+        tracker.check_for_events(70.0, &[missile.clone()], &[icpt], &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        assert_eq!(tracker.intercept_results.len(), 1);
+        let result = &tracker.intercept_results[0];
+        assert!(result.was_hit);
+        assert_eq!(result.defense_unit_name, "Test Battery");
+        assert_eq!(result.target_name, "Test Missile");
+        assert_eq!(result.interceptor_type, "THAAD");
+        assert_eq!(result.final_pk, Some(0.72));
+        assert_eq!(result.miss_distance_km, Some(0.35));
+        assert_eq!(result.miss_reason, None);
+        assert!((result.flight_time_sec - 55.0).abs() < 1e-9);
+    }
+
+    /// InFlight -> Miss transition records a miss result with reason.
+    #[test]
+    fn test_miss_records_result() {
+        let mut tracker = EventTracker::new();
+        let missile = make_missile();
+        let unit = make_defense_unit();
+
+        let icpt = make_interceptor(2, InterceptorStatus::InFlight);
+        tracker.check_for_events(10.0, &[missile.clone()], &[icpt], &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        let icpt = make_interceptor(2, InterceptorStatus::Miss);
+        tracker.check_for_events(80.0, &[missile.clone()], &[icpt], &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        assert_eq!(tracker.intercept_results.len(), 1);
+        let result = &tracker.intercept_results[0];
+        assert!(!result.was_hit);
+        assert_eq!(result.final_pk, Some(0.72));
+        assert_eq!(result.miss_reason, Some(MissReason::PkRoll));
+        assert_eq!(result.target_name, "Test Missile");
+    }
+
+    /// InFlight -> SelfDestruct transition records a miss result (FTS doctrine).
+    #[test]
+    fn test_self_destruct_records_result() {
+        let mut tracker = EventTracker::new();
+        let missile = make_missile();
+        let unit = make_defense_unit();
+
+        let icpt = make_interceptor(3, InterceptorStatus::InFlight);
+        tracker.check_for_events(10.0, &[missile.clone()], &[icpt], &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        let icpt = make_interceptor(3, InterceptorStatus::SelfDestruct);
+        tracker.check_for_events(90.0, &[missile.clone()], &[icpt], &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        assert_eq!(tracker.intercept_results.len(), 1);
+        let result = &tracker.intercept_results[0];
+        assert!(!result.was_hit);
+        assert_eq!(result.miss_reason, Some(MissReason::PkRoll));
+    }
+
+    /// A frame where the interceptor status doesn't change records nothing new.
+    #[test]
+    fn test_no_transition_no_result() {
+        let mut tracker = EventTracker::new();
+        let missile = make_missile();
+        let unit = make_defense_unit();
+
+        let icpt = make_interceptor(4, InterceptorStatus::Hit);
+        tracker.check_for_events(
+            10.0,
+            &[missile.clone()],
+            &[icpt.clone()],
+            &[unit.clone()],
+            |_| "THAAD".to_string(),
+        );
+        // Same status again: no new result (guard against double-recording)
+        tracker.check_for_events(
+            20.0,
+            &[missile.clone()],
+            &[icpt.clone()],
+            &[unit.clone()],
+            |_| "THAAD".to_string(),
+        );
+
+        // One result: the (None, Hit) initial-transition path fired once
+        assert_eq!(tracker.intercept_results.len(), 1);
+    }
+
+    /// Hit, miss, and self-destruct across distinct interceptors accumulate.
+    #[test]
+    fn test_mixed_results_accumulate() {
+        let mut tracker = EventTracker::new();
+        let missile = make_missile();
+        let unit = make_defense_unit();
+
+        // Frame 1: two interceptors in flight
+        let icpts = [
+            make_interceptor(5, InterceptorStatus::InFlight),
+            make_interceptor(6, InterceptorStatus::InFlight),
+        ];
+        tracker.check_for_events(10.0, &[missile.clone()], &icpts, &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        // Frame 2: one hits, one misses
+        let icpts = [
+            make_interceptor(5, InterceptorStatus::Hit),
+            make_interceptor(6, InterceptorStatus::Miss),
+        ];
+        tracker.check_for_events(70.0, &[missile.clone()], &icpts, &[unit.clone()], |_| {
+            "THAAD".to_string()
+        });
+
+        assert_eq!(tracker.intercept_results.len(), 2);
+        assert!(tracker.intercept_results[0].was_hit);
+        assert!(!tracker.intercept_results[1].was_hit);
+    }
 }

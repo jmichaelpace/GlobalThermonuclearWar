@@ -1,3 +1,4 @@
+use crate::audio::AudioManager;
 use crate::effects::{EffectType, EffectsManager};
 use crate::map::{GeoCoord, GibsTileCache, GibsTileCoord, MapStyle, TileCache, Viewport};
 use crate::rendering::{colors, DetectionOverlays, MilitarySymbols};
@@ -274,6 +275,19 @@ pub struct ViewPreset {
     pub zoom: f64,
 }
 
+/// Shortest signed longitude delta from `from` to `to` (degrees), handling
+/// antimeridian wraparound: e.g. 179 -> -179 is +2, not -358.
+fn shortest_lon_delta(from: f64, to: f64) -> f64 {
+    let mut delta = to - from;
+    while delta > 180.0 {
+        delta -= 360.0;
+    }
+    while delta < -180.0 {
+        delta += 360.0;
+    }
+    delta
+}
+
 fn get_view_presets() -> Vec<ViewPreset> {
     vec![
         ViewPreset {
@@ -332,12 +346,17 @@ pub struct App {
     show_tracking_lines: bool,
     show_scenario_panel: bool,
     show_radar_stats: bool,
+    show_battery_status: bool,
+    show_bda: bool,
+    show_track_quality: bool,
     selection: Option<Selection>,
     current_scenario: usize,
     // Consolidated event tracking
     event_tracker: EventTracker,
     // Visual effects manager
     effects_manager: EffectsManager,
+    // Sound effects
+    audio: AudioManager,
     // View mode (Map2D, Globe, or Intercept3D)
     view_mode: ViewMode,
     globe_state: GlobeState,
@@ -353,6 +372,13 @@ pub struct App {
     scenarios: Vec<ScenarioDefinition>,
     // Scenario builder (Some = builder mode active)
     builder: Option<ScenarioBuilder>,
+    // Camera follow target (locks viewport/globe center to the selected
+    // entity; cleared by manual camera input or entity vanishing)
+    follow_target: Option<Selection>,
+    // DEFCON assessment state (sensor-derived, klaxon gate)
+    alert_tracker: crate::simulation::alert::AlertTracker,
+    // Quality-gated track count from the last DEFCON assessment (tooltip)
+    gated_track_count: usize,
 }
 
 impl App {
@@ -389,10 +415,14 @@ impl App {
             show_tracking_lines: true,
             show_scenario_panel: false,
             show_radar_stats: false,
+            show_battery_status: false,
+            show_bda: false,
+            show_track_quality: true,
             selection: None,
             current_scenario: default_scenario_idx,
             event_tracker: EventTracker::new(),
             effects_manager: EffectsManager::new(),
+            audio: AudioManager::new(),
             view_mode: ViewMode::Map2D,
             globe_state: GlobeState::default(),
             isometric_state: IsometricViewState::default(),
@@ -401,6 +431,9 @@ impl App {
             show_false_alarms: true,
             scenarios, // Cache scenarios loaded at startup
             builder: None,
+            follow_target: None,
+            alert_tracker: crate::simulation::alert::AlertTracker::new(),
+            gated_track_count: 0,
         }
     }
 
@@ -423,6 +456,7 @@ impl App {
     /// Check for state changes and generate events
     fn generate_events(&mut self) {
         let sim_time = self.simulation.sim_time;
+        let events_before = self.event_tracker.event_log.events_added;
 
         // Drain pending events from simulation engine (e.g., guidance events)
         let pending_events = self.simulation.drain_events();
@@ -451,12 +485,177 @@ impl App {
             self.effects_manager
                 .spawn(request.position, request.effect_type, sim_time);
         }
+
+        // Play sounds for events logged since last frame (guidance events
+        // have no sound mapping and are filtered inside play_event).
+        let log = &self.event_tracker.event_log;
+        let added = log.events_added;
+        if added > events_before {
+            let start = (added - events_before) as usize;
+            // Events may have been trimmed by the max_events cap; take the
+            // newest `start` entries that are actually present.
+            let skip = log.events.len().saturating_sub(start);
+            let new_events: Vec<EventType> = log
+                .events
+                .iter()
+                .skip(skip)
+                .map(|e| e.event_type.clone())
+                .collect();
+            for event in &new_events {
+                self.audio.play_event(event);
+            }
+        }
     }
 
     /// Clear event tracking state (called when loading new scenario)
     fn clear_event_tracking(&mut self) {
         self.event_tracker.clear();
         self.effects_manager.clear();
+        self.audio.reset();
+        self.alert_tracker.reset();
+        self.follow_target = None;
+    }
+
+    /// Assess the sensor-derived threat level and update the DEFCON state.
+    /// Returns (current level, true if the warning klaxon should sound).
+    ///
+    /// Sensor-only doctrine: computed from fused tracks + in-flight
+    /// interceptor assignments, never from missile ground truth.
+    fn assess_threat_level(&mut self) -> (crate::simulation::alert::AlertLevel, bool) {
+        use crate::simulation::alert as alert_mod;
+        use std::collections::HashSet;
+
+        // Defense unit ids (for fused-track lookups)
+        let defense_unit_ids: HashSet<u64> =
+            self.snapshot.defense_units.iter().map(|u| u.id).collect();
+
+        // Targets with an in-flight interceptor assigned (engagement state)
+        let engaged: HashSet<u64> = self
+            .snapshot
+            .interceptors
+            .iter()
+            .filter(|i| i.status == InterceptorStatus::InFlight)
+            .map(|i| i.target_id)
+            .collect();
+
+        let sim_time = self.snapshot.sim_time;
+        let fused_tracks = self
+            .simulation
+            .detection
+            .get_all_fused_tracks(&defense_unit_ids, sim_time);
+
+        let threats: Vec<alert_mod::TrackThreat> = fused_tracks
+            .iter()
+            .map(|t| alert_mod::track_threat_from_fused(t, sim_time, &engaged))
+            .collect();
+
+        // Cache the gated count for the DEFCON tooltip (avoids a second
+        // fused-track query per frame)
+        self.gated_track_count = threats.iter().filter(|t| t.quality_gated).count();
+
+        let level = alert_mod::assess_tracks(&threats);
+        let klaxon = self.alert_tracker.update(level);
+        (level, klaxon)
+    }
+
+    /// Update camera follow: smoothly move the map/globe center toward the
+    /// followed entity's position each frame.
+    ///
+    /// The camera is a UI concept, not fire control — following a missile
+    /// uses its snapshot (ground-truth) position, which is fine for display.
+    fn update_camera_follow(&mut self, dt: f64) {
+        use crate::map::GeoCoord;
+
+        let Some(target) = self.follow_target else {
+            return;
+        };
+
+        // Resolve the followed entity's current position
+        let position: Option<GeoCoord> = match target {
+            Selection::Missile(id) => self
+                .snapshot
+                .missiles
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.position),
+            Selection::Interceptor(id) => self
+                .snapshot
+                .interceptors
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| i.position),
+            Selection::DefenseUnit(id) => self
+                .snapshot
+                .defense_units
+                .iter()
+                .find(|u| u.id == id)
+                .map(|u| u.position),
+            Selection::RadarStation(id) => self
+                .snapshot
+                .radar_stations
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.position),
+            Selection::Satellite(id) => self
+                .snapshot
+                .satellites
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.position),
+            // Intercept results are static; nothing to follow
+            Selection::InterceptResult(_) => None,
+        };
+
+        let Some(pos) = position else {
+            // Entity vanished: stop following
+            self.follow_target = None;
+            return;
+        };
+
+        // Exponential smoothing toward the target position (dt-scaled so it
+        // is frame-rate independent; ~0.15s to close most of the gap)
+        let alpha = 1.0 - (-dt / 0.15).exp();
+
+        match self.view_mode {
+            ViewMode::Map2D => {
+                self.viewport.center.lat += (pos.lat - self.viewport.center.lat) * alpha;
+                self.viewport.center.lon +=
+                    shortest_lon_delta(self.viewport.center.lon, pos.lon) * alpha;
+
+                // Auto-zoom toward a per-entity-type framing level (interceptors
+                // tight, satellites wide). Eases at the same rate as the pan.
+                let target_zoom = match target {
+                    Selection::Interceptor(_) => 7.0,
+                    Selection::Missile(_) => 5.5,
+                    Selection::DefenseUnit(_) | Selection::RadarStation(_) => 4.0,
+                    Selection::Satellite(_) => 3.0,
+                    Selection::InterceptResult(_) => unreachable!("never followed"),
+                };
+                self.viewport.zoom += (target_zoom - self.viewport.zoom).clamp(-alpha, alpha);
+            }
+            ViewMode::Globe => {
+                self.globe_state.center_lat += (pos.lat - self.globe_state.center_lat) * alpha;
+                self.globe_state.center_lon +=
+                    shortest_lon_delta(self.globe_state.center_lon, pos.lon) * alpha;
+                // Kill rotation inertia while following
+                self.globe_state.rotation_velocity = (0.0, 0.0);
+            }
+            // Intercept3D derives its camera from its own focus state
+            ViewMode::Intercept3D => {}
+        }
+    }
+
+    /// Toggle camera follow for the current selection (F key / Follow button).
+    fn toggle_follow(&mut self) {
+        if self.follow_target.is_some() {
+            self.follow_target = None;
+        } else if let Some(sel) = self.selection {
+            // Only follow entities with meaningful positions (not static
+            // intercept results)
+            if !matches!(sel, Selection::InterceptResult(_)) {
+                self.follow_target = Some(sel);
+            }
+        }
     }
 
     /// Update visual effects (remove finished ones)
@@ -655,6 +854,8 @@ impl App {
         // Pan with drag
         if response.dragged() {
             self.viewport.pan(response.drag_delta(), available_rect);
+            // Manual camera input cancels follow mode
+            self.follow_target = None;
             ui.ctx().request_repaint();
         }
 
@@ -666,6 +867,8 @@ impl App {
                     let zoom_delta = scroll_delta as f64 * 0.01;
                     self.viewport
                         .zoom_at(zoom_delta, pointer_pos, available_rect);
+                    // Manual camera input cancels follow mode
+                    self.follow_target = None;
                     ui.ctx().request_repaint();
                 }
             }
@@ -755,6 +958,8 @@ impl App {
                 response.drag_delta().y as f64 * 0.3,
             );
             self.globe_state.dragging = true;
+            // Manual camera input cancels follow mode
+            self.follow_target = None;
             ui.ctx().request_repaint();
         } else {
             self.globe_state.dragging = false;
@@ -780,6 +985,8 @@ impl App {
                 80.0,
                 available_rect.width().min(available_rect.height()) * 1.5,
             );
+            // Manual camera input cancels follow mode
+            self.follow_target = None;
             ui.ctx().request_repaint();
         }
 
@@ -789,6 +996,7 @@ impl App {
                 80.0,
                 available_rect.width().min(available_rect.height()) * 1.5,
             );
+            self.follow_target = None;
             ui.ctx().request_repaint();
         }
         if ui.input(|i| i.key_pressed(egui::Key::Minus)) {
@@ -796,6 +1004,7 @@ impl App {
                 80.0,
                 available_rect.width().min(available_rect.height()) * 1.5,
             );
+            self.follow_target = None;
             ui.ctx().request_repaint();
         }
 
@@ -1788,38 +1997,72 @@ impl App {
                 .globe_state
                 .geo_to_screen(result.intercept_position, screen_center)
             {
-                // Draw a green diamond/star marker for successful intercepts
                 let size = 8.0;
-                let color = egui::Color32::from_rgb(50, 255, 50);
 
-                // Draw diamond shape
-                let points = vec![
-                    egui::pos2(pos.x, pos.y - size), // top
-                    egui::pos2(pos.x + size, pos.y), // right
-                    egui::pos2(pos.x, pos.y + size), // bottom
-                    egui::pos2(pos.x - size, pos.y), // left
-                ];
-                painter.add(egui::Shape::convex_polygon(
-                    points.clone(),
-                    egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180),
-                    egui::Stroke::new(2.0, color),
-                ));
+                if result.was_hit {
+                    // Green diamond/star marker for successful intercepts
+                    let color = egui::Color32::from_rgb(50, 255, 50);
 
-                // Draw inner cross/star
-                painter.line_segment(
-                    [
-                        egui::pos2(pos.x - size * 0.5, pos.y),
-                        egui::pos2(pos.x + size * 0.5, pos.y),
-                    ],
-                    egui::Stroke::new(2.0, egui::Color32::WHITE),
-                );
-                painter.line_segment(
-                    [
-                        egui::pos2(pos.x, pos.y - size * 0.5),
-                        egui::pos2(pos.x, pos.y + size * 0.5),
-                    ],
-                    egui::Stroke::new(2.0, egui::Color32::WHITE),
-                );
+                    // Draw diamond shape
+                    let points = vec![
+                        egui::pos2(pos.x, pos.y - size), // top
+                        egui::pos2(pos.x + size, pos.y), // right
+                        egui::pos2(pos.x, pos.y + size), // bottom
+                        egui::pos2(pos.x - size, pos.y), // left
+                    ];
+                    painter.add(egui::Shape::convex_polygon(
+                        points.clone(),
+                        egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180),
+                        egui::Stroke::new(2.0, color),
+                    ));
+
+                    // Draw inner cross/star
+                    painter.line_segment(
+                        [
+                            egui::pos2(pos.x - size * 0.5, pos.y),
+                            egui::pos2(pos.x + size * 0.5, pos.y),
+                        ],
+                        egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    );
+                    painter.line_segment(
+                        [
+                            egui::pos2(pos.x, pos.y - size * 0.5),
+                            egui::pos2(pos.x, pos.y + size * 0.5),
+                        ],
+                        egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    );
+                } else {
+                    // Hollow red diamond with X for missed attempts
+                    let color = egui::Color32::from_rgb(255, 80, 80);
+
+                    let points = vec![
+                        egui::pos2(pos.x, pos.y - size), // top
+                        egui::pos2(pos.x + size, pos.y), // right
+                        egui::pos2(pos.x, pos.y + size), // bottom
+                        egui::pos2(pos.x - size, pos.y), // left
+                    ];
+                    painter.add(egui::Shape::convex_polygon(
+                        points,
+                        egui::Color32::from_rgba_unmultiplied(120, 20, 20, 90),
+                        egui::Stroke::new(1.5, color),
+                    ));
+
+                    // Inner X (miss)
+                    painter.line_segment(
+                        [
+                            egui::pos2(pos.x - size * 0.45, pos.y - size * 0.45),
+                            egui::pos2(pos.x + size * 0.45, pos.y + size * 0.45),
+                        ],
+                        egui::Stroke::new(1.5, color),
+                    );
+                    painter.line_segment(
+                        [
+                            egui::pos2(pos.x + size * 0.45, pos.y - size * 0.45),
+                            egui::pos2(pos.x - size * 0.45, pos.y + size * 0.45),
+                        ],
+                        egui::Stroke::new(1.5, color),
+                    );
+                }
             }
         }
     }
@@ -2794,6 +3037,13 @@ impl App {
                 fused_track.fused_quality,
             );
 
+            // Track quality ring + info badge (sensor-derived quality viz)
+            if self.show_track_quality {
+                let quality_color = colors::track_quality_color(fused_track.fused_quality);
+                painter.circle_stroke(pos, 14.0, egui::Stroke::new(2.0, quality_color));
+                self.draw_track_info_badge(painter, pos, fused_track);
+            }
+
             // Use predicted heading from track, or calculate from missile target if available
             let heading = if let Some(missile) = missile {
                 bearing(estimated_pos, missile.target)
@@ -3148,38 +3398,72 @@ impl App {
                 .viewport
                 .geo_to_screen(result.intercept_position, screen_rect);
 
-            // Draw a green diamond/star marker for successful intercepts
             let size = 8.0;
-            let color = egui::Color32::from_rgb(50, 255, 50);
 
-            // Draw diamond shape
-            let points = vec![
-                egui::pos2(pos.x, pos.y - size), // top
-                egui::pos2(pos.x + size, pos.y), // right
-                egui::pos2(pos.x, pos.y + size), // bottom
-                egui::pos2(pos.x - size, pos.y), // left
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                points.clone(),
-                egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180),
-                egui::Stroke::new(2.0, color),
-            ));
+            if result.was_hit {
+                // Green diamond/star marker for successful intercepts
+                let color = egui::Color32::from_rgb(50, 255, 50);
 
-            // Draw inner cross/star
-            painter.line_segment(
-                [
-                    egui::pos2(pos.x - size * 0.5, pos.y),
-                    egui::pos2(pos.x + size * 0.5, pos.y),
-                ],
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(pos.x, pos.y - size * 0.5),
-                    egui::pos2(pos.x, pos.y + size * 0.5),
-                ],
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
-            );
+                // Draw diamond shape
+                let points = vec![
+                    egui::pos2(pos.x, pos.y - size), // top
+                    egui::pos2(pos.x + size, pos.y), // right
+                    egui::pos2(pos.x, pos.y + size), // bottom
+                    egui::pos2(pos.x - size, pos.y), // left
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    points.clone(),
+                    egui::Color32::from_rgba_unmultiplied(50, 255, 50, 180),
+                    egui::Stroke::new(2.0, color),
+                ));
+
+                // Draw inner cross/star
+                painter.line_segment(
+                    [
+                        egui::pos2(pos.x - size * 0.5, pos.y),
+                        egui::pos2(pos.x + size * 0.5, pos.y),
+                    ],
+                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                );
+                painter.line_segment(
+                    [
+                        egui::pos2(pos.x, pos.y - size * 0.5),
+                        egui::pos2(pos.x, pos.y + size * 0.5),
+                    ],
+                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                );
+            } else {
+                // Hollow red diamond with X for missed attempts
+                let color = egui::Color32::from_rgb(255, 80, 80);
+
+                let points = vec![
+                    egui::pos2(pos.x, pos.y - size), // top
+                    egui::pos2(pos.x + size, pos.y), // right
+                    egui::pos2(pos.x, pos.y + size), // bottom
+                    egui::pos2(pos.x - size, pos.y), // left
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    points,
+                    egui::Color32::from_rgba_unmultiplied(120, 20, 20, 90),
+                    egui::Stroke::new(1.5, color),
+                ));
+
+                // Inner X (miss)
+                painter.line_segment(
+                    [
+                        egui::pos2(pos.x - size * 0.45, pos.y - size * 0.45),
+                        egui::pos2(pos.x + size * 0.45, pos.y + size * 0.45),
+                    ],
+                    egui::Stroke::new(1.5, color),
+                );
+                painter.line_segment(
+                    [
+                        egui::pos2(pos.x + size * 0.45, pos.y - size * 0.45),
+                        egui::pos2(pos.x - size * 0.45, pos.y + size * 0.45),
+                    ],
+                    egui::Stroke::new(1.5, color),
+                );
+            }
         }
     }
 
@@ -4336,6 +4620,13 @@ impl App {
                 fused_track.fused_quality,
             );
 
+            // Track quality ring + info badge (sensor-derived quality viz)
+            if self.show_track_quality {
+                let quality_color = colors::track_quality_color(fused_track.fused_quality);
+                painter.circle_stroke(pos, 16.0, egui::Stroke::new(2.0, quality_color));
+                self.draw_track_info_badge(painter, pos, fused_track);
+            }
+
             // Fire control lock only when defense unit radar is tracking
             // AND track quality requirements are met
             let fire_control_locked = fused_track.has_fire_control_lock
@@ -5200,9 +5491,47 @@ impl App {
             } else {
                 "⏸"
             };
-            if ui.button(play_pause).clicked() {
+            if ui.button(play_pause).on_hover_text("Play/Pause").clicked() {
                 self.simulation.toggle_pause();
             }
+
+            let sound_toggle = if self.audio.muted { "🔇" } else { "🔊" };
+            if ui
+                .button(sound_toggle)
+                .on_hover_text(if self.audio.muted {
+                    "Unmute sounds"
+                } else {
+                    "Mute sounds"
+                })
+                .clicked()
+            {
+                self.audio.muted = !self.audio.muted;
+            }
+
+            // DEFCON indicator (sensor-derived threat level)
+            let alert_level = self.alert_tracker.last_level();
+            let (r, g, b) = alert_level.color();
+            let alert_label = egui::RichText::new(alert_level.name())
+                .color(egui::Color32::from_rgb(r, g, b))
+                .strong();
+            let gated_count = self.gated_track_count;
+            let high_threat = alert_level <= crate::simulation::alert::AlertLevel::Defcon2;
+            let hover = if high_threat {
+                format!(
+                    "⚠ {} — HIGH THREAT\n\
+                     Terminal-phase engagement window active\n\
+                     Quality-gated tracks: {gated_count}",
+                    alert_level.name()
+                )
+            } else {
+                format!(
+                    "Sensor-derived threat assessment\n\
+                     Quality-gated tracks: {gated_count}\n\
+                     Levels: 1 = terminal leaker | 2 = terminal threats\n\
+                     3 = threats inbound | 4 = tracks established | 5 = clear"
+                )
+            };
+            ui.label(alert_label).on_hover_text(hover);
 
             ui.separator();
             ui.label("Speed:");
@@ -5659,6 +5988,26 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("✕").clicked() {
                             self.selection = None;
+                        }
+                        // Camera follow toggle (only for position-holding
+                        // selections; intercept results are static)
+                        if !matches!(selection, Selection::InterceptResult(_)) {
+                            let following = self.follow_target == Some(selection);
+                            let label = if following {
+                                "Following ✓"
+                            } else {
+                                "Follow (F)"
+                            };
+                            if ui
+                                .button(label)
+                                .on_hover_text(
+                                    "Lock the camera onto this entity (F toggles; \
+                                     dragging or zooming releases)",
+                                )
+                                .clicked()
+                            {
+                                self.toggle_follow();
+                            }
                         }
                     });
                 });
@@ -7727,10 +8076,32 @@ impl App {
         ui: &mut egui::Ui,
         result: &crate::tracking::InterceptResult,
     ) {
+        let (icon, color) = if result.was_hit {
+            ("🎯", egui::Color32::from_rgb(100, 255, 100))
+        } else {
+            ("❌", egui::Color32::from_rgb(255, 120, 120))
+        };
         ui.colored_label(
-            egui::Color32::from_rgb(100, 255, 100),
-            format!("🎯 Intercept: {}", result.target_name),
+            color,
+            format!(
+                "{icon} {}: {}",
+                if result.was_hit { "Kill" } else { "Miss" },
+                result.target_name
+            ),
         );
+        if let Some(reason) = result.miss_reason {
+            if !matches!(reason, crate::simulation::MissReason::None) {
+                let reason_str = match reason {
+                    crate::simulation::MissReason::PkRoll => "Pk roll failed",
+                    crate::simulation::MissReason::DebrisDamage => "Debris damage",
+                    crate::simulation::MissReason::OffCourse => "Flew past intercept point",
+                    crate::simulation::MissReason::SeekerLost => "Seeker lost track",
+                    crate::simulation::MissReason::BreakOff => "Engagement broken off",
+                    crate::simulation::MissReason::None => "",
+                };
+                ui.label(egui::RichText::new(format!("Reason: {reason_str}")).weak());
+            }
+        }
         ui.add_space(8.0);
 
         egui::Grid::new("intercept_result_info_grid")
@@ -7799,6 +8170,39 @@ impl App {
                     egui::Color32::from_rgb(255, 150, 150),
                     format!("{:.2} km/s", result.closure_speed_km_s),
                 );
+                ui.end_row();
+
+                ui.separator();
+                ui.separator();
+                ui.end_row();
+
+                ui.label("Pk at Attempt:");
+                match result.final_pk {
+                    Some(pk) => {
+                        let color = if pk >= 0.7 {
+                            egui::Color32::from_rgb(100, 255, 100)
+                        } else if pk >= 0.4 {
+                            egui::Color32::from_rgb(255, 220, 100)
+                        } else {
+                            egui::Color32::from_rgb(255, 120, 120)
+                        };
+                        ui.colored_label(color, format!("{:.2}", pk));
+                    }
+                    None => {
+                        ui.label("—");
+                    }
+                }
+                ui.end_row();
+
+                ui.label("Miss Distance:");
+                match result.miss_distance_km {
+                    Some(dist) => {
+                        ui.label(format!("{:.2} km", dist));
+                    }
+                    None => {
+                        ui.label("—");
+                    }
+                }
                 ui.end_row();
             });
     }
@@ -7954,6 +8358,303 @@ impl App {
                 }
             });
     }
+
+    /// Battery ammunition HUD: per-unit interceptor counts, active engagements.
+    fn render_battery_status_window(&self, ctx: &egui::Context) {
+        egui::Window::new("Battery Status")
+            .default_pos([260.0, 100.0])
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                ui.heading("Interceptor Batteries");
+                ui.separator();
+
+                let units: Vec<&DefenseUnit> = self.snapshot.defense_units.iter().collect();
+                if units.is_empty() {
+                    ui.label("No defense units deployed");
+                    return;
+                }
+
+                for unit in units {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&unit.name).strong());
+                            ui.label(
+                                egui::RichText::new(format!("({})", unit.defense_type.name()))
+                                    .weak(),
+                            );
+                        });
+
+                        // Ammo bar: remaining / max
+                        let remaining = unit.interceptors_remaining;
+                        let max = unit.max_interceptors;
+                        let frac = if max > 0 {
+                            remaining as f32 / max as f32
+                        } else {
+                            0.0
+                        };
+                        let bar = egui::ProgressBar::new(frac)
+                            .text(format!("{remaining} / {max}"))
+                            .desired_width(180.0);
+                        let bar = if remaining == 0 {
+                            bar.fill(egui::Color32::from_rgb(150, 40, 40))
+                        } else if frac < 0.25 {
+                            bar.fill(egui::Color32::from_rgb(200, 120, 40))
+                        } else {
+                            bar.fill(egui::Color32::from_rgb(60, 140, 80))
+                        };
+                        ui.add(bar);
+
+                        // Active engagements for this unit
+                        let active = self
+                            .simulation
+                            .interceptors
+                            .iter()
+                            .filter(|i| i.launcher_id == unit.id)
+                            .filter(|i| i.status == crate::simulation::InterceptorStatus::InFlight)
+                            .count();
+                        let pending = self
+                            .simulation
+                            .interceptors
+                            .iter()
+                            .filter(|i| i.launcher_id == unit.id)
+                            .filter(|i| i.status == crate::simulation::InterceptorStatus::Pending)
+                            .count();
+                        ui.horizontal(|ui| {
+                            let status_color = match unit.status {
+                                crate::simulation::UnitStatus::Engaged => {
+                                    egui::Color32::from_rgb(255, 140, 60)
+                                }
+                                crate::simulation::UnitStatus::Tracking => {
+                                    egui::Color32::from_rgb(120, 180, 255)
+                                }
+                                crate::simulation::UnitStatus::Idle => egui::Color32::GRAY,
+                                crate::simulation::UnitStatus::Disabled => {
+                                    egui::Color32::from_rgb(150, 40, 40)
+                                }
+                            };
+                            ui.colored_label(status_color, format!("{:?}", unit.status));
+                            ui.separator();
+                            ui.label(format!("Active: {active}"));
+                            if pending > 0 {
+                                ui.separator();
+                                ui.label(format!("Pending: {pending}"));
+                            }
+                            if remaining == 0 {
+                                ui.separator();
+                                ui.colored_label(egui::Color32::from_rgb(255, 90, 90), "DEPLETED");
+                            }
+                        });
+                    });
+                    ui.add_space(5.0);
+                }
+            });
+    }
+
+    /// Battle Damage Assessment: per-battery engagement outcomes, leakers,
+    /// pending kill assessments.
+    fn render_bda_window(&self, ctx: &egui::Context) {
+        egui::Window::new("Battle Damage Assessment")
+            .default_pos([260.0, 420.0])
+            .default_width(340.0)
+            .show(ctx, |ui| {
+                ui.heading("Engagement Assessment");
+                ui.separator();
+
+                let results = &self.event_tracker.intercept_results;
+
+                // ---- Summary ----
+                let hits = results.iter().filter(|r| r.was_hit).count();
+                let misses = results.len() - hits;
+                let success = if results.is_empty() {
+                    0.0
+                } else {
+                    hits as f64 / results.len() as f64
+                };
+                ui.horizontal(|ui| {
+                    ui.label("Rounds expended:");
+                    ui.label(format!("{}", results.len()));
+                    ui.separator();
+                    ui.label("Kills:");
+                    ui.colored_label(egui::Color32::from_rgb(80, 220, 80), format!("{hits}"));
+                    ui.separator();
+                    ui.label("Misses:");
+                    ui.colored_label(egui::Color32::from_rgb(255, 120, 120), format!("{misses}"));
+                    ui.separator();
+                    ui.label("Success:");
+                    let color = if success >= 0.7 {
+                        egui::Color32::from_rgb(80, 220, 80)
+                    } else if success >= 0.4 {
+                        egui::Color32::from_rgb(230, 180, 60)
+                    } else {
+                        egui::Color32::from_rgb(255, 120, 120)
+                    };
+                    ui.colored_label(color, format!("{:.0}%", success * 100.0));
+                });
+                ui.separator();
+
+                // ---- Per-battery breakdown ----
+                ui.label(egui::RichText::new("By Battery").strong());
+                let units: Vec<&DefenseUnit> = self.snapshot.defense_units.iter().collect();
+                if units.is_empty() {
+                    ui.label("No defense units deployed");
+                }
+                egui::Grid::new("bda_unit_grid")
+                    .striped(true)
+                    .num_columns(6)
+                    .show(ui, |ui| {
+                        ui.strong("Battery");
+                        ui.strong("Type");
+                        ui.strong("Shots");
+                        ui.strong("Kills");
+                        ui.strong("Misses");
+                        ui.strong("Avg Pk");
+                        ui.end_row();
+                        for unit in &units {
+                            let unit_results: Vec<&crate::tracking::InterceptResult> = results
+                                .iter()
+                                .filter(|r| r.defense_unit_name == unit.name)
+                                .collect();
+                            if unit_results.is_empty() {
+                                continue;
+                            }
+                            let unit_hits = unit_results.iter().filter(|r| r.was_hit).count();
+                            let unit_misses = unit_results.len() - unit_hits;
+                            let avg_pk = unit_results
+                                .iter()
+                                .filter_map(|r| r.final_pk)
+                                .map(|pk| pk.max(0.0).min(1.0))
+                                .sum::<f64>()
+                                / unit_results
+                                    .iter()
+                                    .filter(|r| r.final_pk.is_some())
+                                    .count()
+                                    .max(1) as f64;
+                            ui.label(&unit.name);
+                            ui.label(unit.defense_type.name());
+                            ui.label(format!("{}", unit_results.len()));
+                            ui.colored_label(
+                                egui::Color32::from_rgb(80, 220, 80),
+                                format!("{unit_hits}"),
+                            );
+                            ui.colored_label(
+                                egui::Color32::from_rgb(255, 120, 120),
+                                format!("{unit_misses}"),
+                            );
+                            ui.label(format!("{:.2}", avg_pk));
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(6.0);
+
+                // ---- Leakers: hostile missiles that reached their targets ----
+                ui.label(egui::RichText::new("Leakers").strong());
+                let leakers: Vec<&crate::simulation::Missile> = self
+                    .snapshot
+                    .missiles
+                    .iter()
+                    .filter(|m| m.affiliation == Affiliation::Hostile)
+                    .filter(|m| m.status == crate::simulation::MissileStatus::Impacted)
+                    .collect();
+                if leakers.is_empty() {
+                    ui.label("None");
+                } else {
+                    for missile in leakers {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(255, 90, 90),
+                                format!("{}", missile.name),
+                            );
+                            ui.label(format!(
+                                "→ {:.2}°, {:.2}°",
+                                missile.target.lat, missile.target.lon
+                            ));
+                        });
+                    }
+                }
+                ui.add_space(6.0);
+
+                // ---- Pending kill assessments (SLS doctrine) ----
+                let pending_assessments: Vec<&crate::simulation::engine::KillAssessment> = self
+                    .simulation
+                    .kill_assessments
+                    .iter()
+                    .filter(|a| !a.assessment_complete)
+                    .collect();
+                if !pending_assessments.is_empty() {
+                    ui.label(egui::RichText::new("Pending Kill Assessments").strong());
+                    for assessment in pending_assessments {
+                        let target_name = self
+                            .snapshot
+                            .missiles
+                            .iter()
+                            .find(|m| m.id == assessment.target_id)
+                            .map(|m| m.name.clone())
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        ui.label(format!(
+                            "{} — complete in {:.0}s",
+                            target_name,
+                            (assessment.assessment_complete_time - self.snapshot.sim_time).max(0.0)
+                        ));
+                    }
+                    ui.add_space(6.0);
+                }
+
+                // ---- Debris ----
+                ui.horizontal(|ui| {
+                    ui.label("Debris clouds:");
+                    ui.label(format!("{}", self.snapshot.debris_clouds.len()));
+                });
+
+                // ---- Recent attempts detail ----
+                if !results.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Recent Attempts").strong());
+                    egui::ScrollArea::vertical()
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            // Newest first
+                            for result in results.iter().rev().take(20) {
+                                ui.horizontal(|ui| {
+                                    let (outcome, color) = if result.was_hit {
+                                        ("KILL", egui::Color32::from_rgb(80, 220, 80))
+                                    } else {
+                                        ("MISS", egui::Color32::from_rgb(255, 120, 120))
+                                    };
+                                    ui.colored_label(color, outcome);
+                                    ui.label(&result.target_name);
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", result.interceptor_type))
+                                            .weak(),
+                                    );
+                                    if let Some(pk) = result.final_pk {
+                                        ui.label(format!("Pk {pk:.2}"));
+                                    }
+                                    if let Some(dist) = result.miss_distance_km {
+                                        ui.label(format!("miss {dist:.1}km"));
+                                    }
+                                    if let Some(reason) = result.miss_reason {
+                                        let reason_str = match reason {
+                                            crate::simulation::MissReason::PkRoll => "Pk roll",
+                                            crate::simulation::MissReason::DebrisDamage => "Debris",
+                                            crate::simulation::MissReason::OffCourse => {
+                                                "Off course"
+                                            }
+                                            crate::simulation::MissReason::SeekerLost => {
+                                                "Seeker lost"
+                                            }
+                                            crate::simulation::MissReason::BreakOff => "Break off",
+                                            crate::simulation::MissReason::None => "",
+                                        };
+                                        if !reason_str.is_empty() {
+                                            ui.label(egui::RichText::new(reason_str).weak());
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                }
+            });
+    }
 }
 
 impl eframe::App for App {
@@ -7964,6 +8665,12 @@ impl eframe::App for App {
             if let Some(builder) = &mut self.builder {
                 builder.handle_escape();
             }
+        }
+
+        // F toggles camera follow on the current selection (builder mode
+        // excluded: placement flow owns map interactions there)
+        if ctx.input(|i| i.key_pressed(egui::Key::F)) && self.builder.is_none() {
+            self.toggle_follow();
         }
 
         // Update simulation
@@ -7977,6 +8684,25 @@ impl eframe::App for App {
 
         // Generate events based on state changes
         self.generate_events();
+
+        // Assess sensor-derived threat level (DEFCON) and sound the klaxon
+        // on escalation
+        let (alert_level, klaxon) = self.assess_threat_level();
+        if klaxon {
+            // Log the warning event (feeds the event log and the sound
+            // system through the normal event path)
+            self.event_tracker.event_log.add(
+                self.snapshot.sim_time,
+                EventType::ThreatDetected {
+                    threat_name: alert_level.name().to_string(),
+                    sensor_name: "Defense Network".to_string(),
+                },
+            );
+            self.audio.play(crate::audio::SoundId::ThreatWarning);
+        }
+
+        // Update camera follow (smooth tracking of the followed entity)
+        self.update_camera_follow(dt);
 
         // Update visual effects (remove finished ones)
         self.update_visual_effects();
@@ -8090,6 +8816,7 @@ impl eframe::App for App {
                 // Only show false alarm toggle when in detected mode
                 if self.track_view_mode == TrackViewMode::DetectedTrack {
                     ui.checkbox(&mut self.show_false_alarms, "Clutter");
+                    ui.checkbox(&mut self.show_track_quality, "Quality");
                 }
 
                 ui.separator();
@@ -8100,6 +8827,8 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.show_predicted_tracks, "Predicted");
                 ui.checkbox(&mut self.show_tracking_lines, "Tracks");
                 ui.checkbox(&mut self.show_radar_stats, "Radar Stats");
+                ui.checkbox(&mut self.show_battery_status, "Batteries");
+                ui.checkbox(&mut self.show_bda, "BDA");
 
                 ui.separator();
 
@@ -8176,6 +8905,16 @@ impl eframe::App for App {
         // Radar statistics window
         if self.show_radar_stats {
             self.render_radar_stats_window(ctx);
+        }
+
+        // Battery ammunition HUD
+        if self.show_battery_status {
+            self.render_battery_status_window(ctx);
+        }
+
+        // Battle damage assessment window
+        if self.show_bda {
+            self.render_bda_window(ctx);
         }
 
         // Main map panel

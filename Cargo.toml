@@ -20,3 +20,6 @@ toml = "0.8"
 rayon = "1.10"           # Data parallelism (par_iter)
 crossbeam = "0.8"        # Channels for sim/render communication
 parking_lot = "0.12"     # Faster RwLock/Mutex
+
+# Audio
+rodio = { version = "0.22", default-features = false, features = ["playback", "wav", "vorbis"] }

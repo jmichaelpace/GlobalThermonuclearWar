@@ -1,3 +1,4 @@
+pub mod alert;
 pub mod config;
 pub mod detection;
 pub mod ekf;
