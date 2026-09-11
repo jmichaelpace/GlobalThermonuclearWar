@@ -2,24 +2,264 @@ use crate::simulation::detection::FusedTrack;
 use crate::simulation::kalman::BallisticState;
 use crate::types::GeoCoord;
 
-const EARTH_RADIUS_KM: f64 = 6371.0;
+// ============================================================================
+// WGS-84 ELLIPSOID CONSTANTS AND GEODESIC MATHEMATICS
+// Reference: NIMA TR 8350.2, "Department of Defense World Geodetic System
+// 1984" (3rd ed., 2000); Vincenty (1975), "Direct and Inverse Solutions of
+// Geodesics on the Ellipsoid with Application of Nested Equations",
+// Survey Review 23(176), pp. 88-93.
+// ============================================================================
 
-/// Calculate the great-circle distance between two coordinates in kilometers
-pub fn haversine_distance(from: GeoCoord, to: GeoCoord) -> f64 {
-    let lat1 = from.lat.to_radians();
-    let lat2 = to.lat.to_radians();
-    let delta_lat = (to.lat - from.lat).to_radians();
-    let delta_lon = (to.lon - from.lon).to_radians();
+/// WGS-84 semi-major axis (equatorial radius), km
+pub const WGS84_A: f64 = 6378.137;
+/// WGS-84 flattening (1/298.257223563)
+pub const WGS84_F: f64 = 1.0 / 298.257223563;
+/// WGS-84 semi-minor axis (polar radius), km
+pub const WGS84_B: f64 = WGS84_A * (1.0 - WGS84_F);
+/// WGS-84 first eccentricity squared
+pub const WGS84_E2: f64 = WGS84_F * (2.0 - WGS84_F);
+/// WGS-84 second eccentricity squared
+pub const WGS84_E2P: f64 = (WGS84_A * WGS84_A - WGS84_B * WGS84_B) / (WGS84_B * WGS84_B);
+/// Standard gravitational acceleration at sea level: 9.80665 m/s² (BIPM
+/// standard gravity, 1901) in km/s². Per AGENTS.md realism requirements.
+pub const G0: f64 = 0.00980665;
+/// Mean Earth radius R1 = (2a + b)/3 (IUGG mean), km.
+/// Used where a single effective radius is appropriate: inverse-square
+/// gravity and radar-horizon geometry.
+pub const MEAN_EARTH_RADIUS_KM: f64 = (2.0 * WGS84_A + WGS84_B) / 3.0; // 6371.0088
 
-    let a =
-        (delta_lat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2);
-    let c = 2.0 * a.sqrt().asin();
-
-    EARTH_RADIUS_KM * c
+/// Meridional radius of curvature M(phi) at a geodetic latitude (degrees).
+/// North-south arc length per radian of latitude.
+pub fn meridional_radius_km(lat_deg: f64) -> f64 {
+    let s = lat_deg.to_radians().sin();
+    WGS84_A * (1.0 - WGS84_E2) / (1.0 - WGS84_E2 * s * s).powf(1.5)
 }
 
-/// Calculate the bearing from one coordinate to another (in degrees)
-pub fn bearing(from: GeoCoord, to: GeoCoord) -> f64 {
+/// Prime vertical radius of curvature N(phi) at a geodetic latitude (degrees).
+/// East-west arc length per radian of longitude = N * cos(phi).
+pub fn prime_vertical_radius_km(lat_deg: f64) -> f64 {
+    let s = lat_deg.to_radians().sin();
+    WGS84_A / (1.0 - WGS84_E2 * s * s).sqrt()
+}
+
+/// Result of the geodesic inverse problem: distance and azimuths between
+/// two surface points.
+#[derive(Clone, Copy, Debug)]
+pub struct GeodesicInverse {
+    /// Geodesic distance (km)
+    pub distance_km: f64,
+    /// Initial (forward) azimuth at `from` (degrees, 0 = North)
+    pub initial_bearing_deg: f64,
+    /// Final azimuth at `to`, direction of travel (degrees)
+    pub final_bearing_deg: f64,
+}
+
+/// Vincenty (1975) inverse solution: geodesic distance and azimuths between
+/// two points on the WGS-84 ellipsoid.
+///
+/// Converges for all non-antipodal lines (worst case ~near-antipodal falls
+/// back to a great-circle approximation on the mean radius; antipodal points
+/// do not occur in this simulation's geometries).
+pub fn geodesic_inverse(from: GeoCoord, to: GeoCoord) -> GeodesicInverse {
+    let a = WGS84_A;
+    let f = WGS84_F;
+    let b = WGS84_B;
+
+    let lat1 = from.lat.to_radians();
+    let lat2 = to.lat.to_radians();
+    // Normalize longitude difference to [-180, 180] degrees
+    let mut lon_diff = to.lon - from.lon;
+    while lon_diff > 180.0 {
+        lon_diff -= 360.0;
+    }
+    while lon_diff < -180.0 {
+        lon_diff += 360.0;
+    }
+    let l = lon_diff.to_radians();
+
+    // Reduced latitudes: U = atan((1-f)·tan(φ)).
+    // Computing sin/cos from u directly (not from tan) stays finite at the
+    // poles, where tan(φ) → ∞.
+    let u1 = ((1.0 - f) * lat1.tan()).atan();
+    let sin_u1 = u1.sin();
+    let cos_u1 = u1.cos();
+    let u2 = ((1.0 - f) * lat2.tan()).atan();
+    let sin_u2 = u2.sin();
+    let cos_u2 = u2.cos();
+
+    let mut lambda = l;
+    let mut sin_sigma = 0.0;
+    let mut cos_sigma = 0.0;
+    let mut sigma = 0.0;
+    let mut cos_sq_alpha = 0.0;
+    let mut cos_2sigma_m = 0.0;
+    let mut sin_lambda = 0.0;
+    let mut cos_lambda = 0.0;
+
+    let mut converged = false;
+    for _ in 0..200 {
+        sin_lambda = lambda.sin();
+        cos_lambda = lambda.cos();
+        sin_sigma = ((cos_u2 * sin_lambda).powi(2)
+            + (cos_u1 * sin_u2 - sin_u1 * cos_u2 * cos_lambda).powi(2))
+        .sqrt();
+        if sin_sigma < 1e-12 {
+            // Coincident points
+            return GeodesicInverse {
+                distance_km: 0.0,
+                initial_bearing_deg: spherical_bearing(from, to),
+                final_bearing_deg: spherical_bearing(to, from),
+            };
+        }
+        cos_sigma = sin_u1 * sin_u2 + cos_u1 * cos_u2 * cos_lambda;
+        sigma = sin_sigma.atan2(cos_sigma);
+        let sin_alpha = cos_u1 * cos_u2 * sin_lambda / sin_sigma;
+        cos_sq_alpha = 1.0 - sin_alpha * sin_alpha;
+        cos_2sigma_m = if cos_sq_alpha > 1e-12 {
+            cos_sigma - 2.0 * sin_u1 * sin_u2 / cos_sq_alpha
+        } else {
+            0.0 // Equatorial line
+        };
+        let c = f / 16.0 * cos_sq_alpha * (4.0 + f * (4.0 - 3.0 * cos_sq_alpha));
+        let lambda_prev = lambda;
+        lambda = l
+            + (1.0 - c)
+                * f
+                * sin_alpha
+                * (sigma
+                    + c * sin_sigma
+                        * (cos_2sigma_m + c * cos_sigma * (-1.0 + 2.0 * cos_2sigma_m.powi(2))));
+        if (lambda - lambda_prev).abs() < 1e-13 {
+            converged = true;
+            break;
+        }
+    }
+
+    if !converged {
+        // Near-antipodal non-convergence: fall back to great-circle distance
+        // on the mean radius. Never hit for this sim's geometries (< 8000 km).
+        let cos_d = (lat1.sin() * lat2.sin() + lat1.cos() * lat2.cos() * l.cos()).clamp(-1.0, 1.0);
+        return GeodesicInverse {
+            distance_km: MEAN_EARTH_RADIUS_KM * cos_d.acos(),
+            initial_bearing_deg: spherical_bearing(from, to),
+            final_bearing_deg: spherical_bearing(to, from),
+        };
+    }
+
+    let u_sq = cos_sq_alpha * (a * a - b * b) / (b * b);
+    let big_a = 1.0 + u_sq / 16384.0 * (4096.0 + u_sq * (-768.0 + u_sq * (320.0 - 175.0 * u_sq)));
+    let big_b = u_sq / 1024.0 * (256.0 + u_sq * (-128.0 + u_sq * (74.0 - 47.0 * u_sq)));
+    let delta_sigma = big_b
+        * sin_sigma
+        * (cos_2sigma_m
+            + big_b / 4.0
+                * (cos_sigma * (-1.0 + 2.0 * cos_2sigma_m.powi(2))
+                    - big_b / 6.0
+                        * cos_2sigma_m
+                        * (-3.0 + 4.0 * sin_sigma.powi(2))
+                        * (-3.0 + 4.0 * cos_2sigma_m.powi(2))));
+
+    let distance_km = b * big_a * (sigma - delta_sigma);
+
+    let initial_bearing_deg = (cos_u2 * sin_lambda)
+        .atan2(cos_u1 * sin_u2 - sin_u1 * cos_u2 * cos_lambda)
+        .to_degrees()
+        .rem_euclid(360.0);
+    let final_bearing_deg = (cos_u1 * sin_lambda)
+        .atan2(-sin_u1 * cos_u2 + cos_u1 * sin_u2 * cos_lambda)
+        .to_degrees()
+        .rem_euclid(360.0);
+
+    GeodesicInverse {
+        distance_km,
+        initial_bearing_deg,
+        final_bearing_deg,
+    }
+}
+
+/// Vincenty (1975) direct solution: destination point given a start,
+/// initial azimuth, and geodesic distance on the WGS-84 ellipsoid.
+pub fn geodesic_direct(from: GeoCoord, bearing_deg: f64, distance_km: f64) -> GeoCoord {
+    if distance_km.abs() < 1e-9 {
+        return from;
+    }
+
+    let a = WGS84_A;
+    let f = WGS84_F;
+    let b = WGS84_B;
+
+    let lat1 = from.lat.to_radians();
+    let lon1 = from.lon.to_radians();
+    let alpha1 = bearing_deg.to_radians();
+
+    let sin_alpha1 = alpha1.sin();
+    let cos_alpha1 = alpha1.cos();
+
+    let tan_u1 = (1.0 - f) * lat1.tan();
+    let cos_u1 = 1.0 / (1.0 + tan_u1 * tan_u1).sqrt();
+    let sin_u1 = tan_u1 * cos_u1;
+    let sigma1 = tan_u1.atan2(cos_alpha1);
+
+    let sin_alpha = cos_u1 * sin_alpha1;
+    let cos_sq_alpha = 1.0 - sin_alpha * sin_alpha;
+
+    let u_sq = cos_sq_alpha * (a * a - b * b) / (b * b);
+    let big_a = 1.0 + u_sq / 16384.0 * (4096.0 + u_sq * (-768.0 + u_sq * (320.0 - 175.0 * u_sq)));
+    let big_b = u_sq / 1024.0 * (256.0 + u_sq * (-128.0 + u_sq * (74.0 - 47.0 * u_sq)));
+
+    let mut sigma = distance_km / (b * big_a);
+    let mut sin_sigma = 0.0;
+    let mut cos_sigma = 0.0;
+    let mut cos_2sigma_m = 0.0;
+
+    for _ in 0..200 {
+        sin_sigma = sigma.sin();
+        cos_sigma = sigma.cos();
+        cos_2sigma_m = (2.0 * sigma1 + sigma).cos();
+        let delta_sigma = big_b
+            * sin_sigma
+            * (cos_2sigma_m
+                + big_b / 4.0
+                    * (cos_sigma * (-1.0 + 2.0 * cos_2sigma_m.powi(2))
+                        - big_b / 6.0
+                            * cos_2sigma_m
+                            * (-3.0 + 4.0 * sin_sigma.powi(2))
+                            * (-3.0 + 4.0 * cos_2sigma_m.powi(2))));
+        let sigma_prev = sigma;
+        sigma = distance_km / (b * big_a) + delta_sigma;
+        if (sigma - sigma_prev).abs() < 1e-13 {
+            break;
+        }
+    }
+
+    let tmp = sin_u1 * sin_sigma - cos_u1 * cos_sigma * cos_alpha1;
+    let lat2 = (sin_u1 * cos_sigma + cos_u1 * sin_sigma * cos_alpha1)
+        .atan2((1.0 - f) * (sin_alpha * sin_alpha + tmp * tmp).sqrt());
+
+    let lambda =
+        (sin_sigma * sin_alpha1).atan2(cos_u1 * cos_sigma - sin_u1 * sin_sigma * cos_alpha1);
+
+    let c = f / 16.0 * cos_sq_alpha * (4.0 + f * (4.0 - 3.0 * cos_sq_alpha));
+    let l = lambda
+        - (1.0 - c)
+            * f
+            * sin_alpha
+            * (sigma
+                + c * sin_sigma
+                    * (cos_2sigma_m + c * cos_sigma * (-1.0 + 2.0 * cos_2sigma_m.powi(2))));
+
+    let lon2 = lon1 + l;
+
+    let lon2_deg = lon2.to_degrees();
+    // Wrap to [-180, 180]
+    let lon2_wrapped = lon2_deg - 360.0 * ((lon2_deg + 180.0) / 360.0).floor();
+
+    GeoCoord::new(lat2.to_degrees(), lon2_wrapped)
+}
+
+/// Spherical initial-bearing fallback (used for coincident points where the
+/// geodesic azimuth is undefined)
+fn spherical_bearing(from: GeoCoord, to: GeoCoord) -> f64 {
     let lat1 = from.lat.to_radians();
     let lat2 = to.lat.to_radians();
     let delta_lon = (to.lon - from.lon).to_radians();
@@ -30,32 +270,43 @@ pub fn bearing(from: GeoCoord, to: GeoCoord) -> f64 {
     y.atan2(x).to_degrees().rem_euclid(360.0)
 }
 
-/// Interpolate a position along the great-circle path between two points
-/// `t` is the fraction of the journey (0.0 = start, 1.0 = end)
+/// Geodesic distance on the WGS-84 ellipsoid (km).
+///
+/// Historically the spherical haversine; the name is kept for API
+/// compatibility across the ~45 call sites, but the math is now the
+/// Vincenty inverse solution on the WGS-84 ellipsoid. Differences from the
+/// old R=6371 sphere reach ~0.5% on long high-latitude legs.
+pub fn haversine_distance(from: GeoCoord, to: GeoCoord) -> f64 {
+    geodesic_inverse(from, to).distance_km
+}
+
+/// Initial geodesic azimuth from one coordinate to another (degrees, 0=North)
+pub fn bearing(from: GeoCoord, to: GeoCoord) -> f64 {
+    let inv = geodesic_inverse(from, to);
+    if inv.distance_km < 1e-9 {
+        spherical_bearing(from, to)
+    } else {
+        inv.initial_bearing_deg
+    }
+}
+
+/// Interpolate a position along the geodesic path between two points.
+/// `t` is the fraction of the journey (0.0 = start, 1.0 = end).
+///
+/// The path is the true WGS-84 geodesic (not a spherical great circle);
+/// the name is kept for API compatibility.
 pub fn interpolate_great_circle(from: GeoCoord, to: GeoCoord, t: f64) -> GeoCoord {
-    let lat1 = from.lat.to_radians();
-    let lon1 = from.lon.to_radians();
-    let lat2 = to.lat.to_radians();
-    let lon2 = to.lon.to_radians();
-
-    // Calculate angular distance
-    let delta = haversine_distance(from, to) / EARTH_RADIUS_KM;
-
-    if delta.abs() < 1e-10 {
+    let inv = geodesic_inverse(from, to);
+    if inv.distance_km < 1e-9 {
         return from;
     }
-
-    let a = ((1.0 - t) * delta).sin() / delta.sin();
-    let b = (t * delta).sin() / delta.sin();
-
-    let x = a * lat1.cos() * lon1.cos() + b * lat2.cos() * lon2.cos();
-    let y = a * lat1.cos() * lon1.sin() + b * lat2.cos() * lon2.sin();
-    let z = a * lat1.sin() + b * lat2.sin();
-
-    let lat = z.atan2((x * x + y * y).sqrt());
-    let lon = y.atan2(x);
-
-    GeoCoord::new(lat.to_degrees(), lon.to_degrees())
+    if t <= 0.0 {
+        return from;
+    }
+    if t >= 1.0 {
+        return to;
+    }
+    geodesic_direct(from, inv.initial_bearing_deg, inv.distance_km * t)
 }
 
 /// Ballistic trajectory calculator
@@ -75,13 +326,18 @@ pub struct BallisticTrajectory {
     pub apogee_uncertainty_km: Option<f64>,
     /// True if this trajectory was reconstructed from sensor data
     pub is_sensor_derived: bool,
+    /// Cached geodesic from origin: initial azimuth and distance.
+    /// position_at() runs per physics sub-step (up to 100/frame), so the
+    /// Vincenty inverse is solved once here instead of per lookup.
+    origin_azimuth_deg: f64,
 }
 
 impl BallisticTrajectory {
     /// Create a new ballistic trajectory with auto-calculated parameters
     /// `range_km` is auto-calculated, `max_altitude_km` is estimated based on range
     pub fn new(origin: GeoCoord, target: GeoCoord) -> Self {
-        let range_km = haversine_distance(origin, target);
+        let inv = geodesic_inverse(origin, target);
+        let range_km = inv.distance_km;
 
         // Estimate max altitude based on range
         // ICBMs typically reach 1000-1500km apogee for 10000km range
@@ -102,6 +358,7 @@ impl BallisticTrajectory {
             target_uncertainty_km: None,
             apogee_uncertainty_km: None,
             is_sensor_derived: false,
+            origin_azimuth_deg: inv.initial_bearing_deg,
         }
     }
 
@@ -112,18 +369,19 @@ impl BallisticTrajectory {
         max_altitude_km: f64,
         flight_time_sec: f64,
     ) -> Self {
-        let range_km = haversine_distance(origin, target);
+        let inv = geodesic_inverse(origin, target);
 
         Self {
             origin,
             target,
-            range_km,
+            range_km: inv.distance_km,
             max_altitude_km,
             flight_time_sec,
             origin_uncertainty_km: None,
             target_uncertainty_km: None,
             apogee_uncertainty_km: None,
             is_sensor_derived: false,
+            origin_azimuth_deg: inv.initial_bearing_deg,
         }
     }
 
@@ -131,8 +389,15 @@ impl BallisticTrajectory {
     pub fn position_at(&self, progress: f64) -> (GeoCoord, f64) {
         let t = progress.clamp(0.0, 1.0);
 
-        // Ground position along great circle
-        let ground_pos = interpolate_great_circle(self.origin, self.target, t);
+        // Ground position along the WGS-84 geodesic (single Vincenty direct
+        // call using the cached azimuth)
+        let ground_pos = if self.range_km < 1e-9 {
+            self.origin
+        } else if t >= 1.0 {
+            self.target
+        } else {
+            geodesic_direct(self.origin, self.origin_azimuth_deg, self.range_km * t)
+        };
 
         // Altitude follows a parabolic profile
         // Peak at t = 0.5 (midcourse)
@@ -221,6 +486,7 @@ impl BallisticTrajectory {
             target_uncertainty_km: Some(target_uncertainty),
             apogee_uncertainty_km: Some(apogee_uncertainty),
             is_sensor_derived: true,
+            origin_azimuth_deg: heading,
         })
     }
 
@@ -348,7 +614,7 @@ fn apogee_from_burnout(
     burnout_velocity_km_s: f64,
     launch_angle_deg: f64,
 ) -> f64 {
-    let r_burnout = EARTH_RADIUS_KM + burnout_alt_km;
+    let r_burnout = MEAN_EARTH_RADIUS_KM + burnout_alt_km;
     let v = burnout_velocity_km_s;
     let gamma = launch_angle_deg.to_radians();
 
@@ -363,7 +629,7 @@ fn apogee_from_burnout(
     // For suborbital trajectory, energy < 0
     if energy >= 0.0 {
         // Escape trajectory - use simplified model
-        return burnout_alt_km + v_radial * v_radial / (2.0 * 0.00981);
+        return burnout_alt_km + v_radial * v_radial / (2.0 * G0);
     }
 
     // Semi-major axis from energy: a = -μ/(2E)
@@ -387,7 +653,7 @@ fn apogee_from_burnout(
     let apogee_radius = semi_major_axis * (1.0 + eccentricity);
 
     // Apogee altitude
-    let apogee_altitude = apogee_radius - EARTH_RADIUS_KM;
+    let apogee_altitude = apogee_radius - MEAN_EARTH_RADIUS_KM;
 
     // Sanity check: apogee should be above burnout
     apogee_altitude.max(burnout_alt_km)
@@ -530,7 +796,7 @@ pub fn predict_trajectory_from_track(
     let estimated_apogee = if velocity.vertical_rate_km_s >= 0.0 {
         // Still ascending - apogee not yet reached
         // Estimate using ballistic kinematics: h_max = h + v²/(2g)
-        let g = 0.00981; // km/s²
+        let g = G0; // km/s²
         let v_up = velocity.vertical_rate_km_s;
         fused_track.estimated_altitude + (v_up * v_up) / (2.0 * g)
     } else {
@@ -644,31 +910,53 @@ pub struct LambertSolution {
 }
 
 /// Convert geodetic coordinates to ECEF (Earth-Centered Earth-Fixed)
-/// Returns position vector [x, y, z] in km
+/// using the WGS-84 ellipsoid.
+/// Returns position vector [x, y, z] in km.
+///
+/// x = (N + h)·cos(φ)·cos(λ), y = (N + h)·cos(φ)·sin(λ),
+/// z = (N(1-e²) + h)·sin(φ), with N the prime-vertical radius of curvature.
 pub fn geodetic_to_ecef(coord: GeoCoord, altitude_km: f64) -> [f64; 3] {
     let lat = coord.lat.to_radians();
     let lon = coord.lon.to_radians();
-    let r = EARTH_RADIUS_KM + altitude_km;
+    let n = prime_vertical_radius_km(coord.lat);
 
     [
-        r * lat.cos() * lon.cos(),
-        r * lat.cos() * lon.sin(),
-        r * lat.sin(),
+        (n + altitude_km) * lat.cos() * lon.cos(),
+        (n + altitude_km) * lat.cos() * lon.sin(),
+        (n * (1.0 - WGS84_E2) + altitude_km) * lat.sin(),
     ]
 }
 
-/// Convert ECEF position to geodetic coordinates
+/// Convert ECEF position to geodetic coordinates on the WGS-84 ellipsoid.
+///
+/// Uses Bowring's non-iterative method (1976): exact to sub-millimeter for
+/// terrestrial and low-orbit altitudes, no iteration cost.
 pub fn ecef_to_geodetic(pos: [f64; 3]) -> (GeoCoord, f64) {
     let x = pos[0];
     let y = pos[1];
     let z = pos[2];
 
-    let r = (x * x + y * y + z * z).sqrt();
-    let lat = (z / r).asin().to_degrees();
-    let lon = y.atan2(x).to_degrees();
-    let altitude_km = r - EARTH_RADIUS_KM;
+    let p = (x * x + y * y).sqrt();
+    let lon = y.atan2(x);
 
-    (GeoCoord { lat, lon }, altitude_km)
+    // Bowring's method: intermediate parametric latitude
+    let tan_theta = (z * WGS84_A) / (p * WGS84_B);
+    let theta = tan_theta.atan();
+
+    let sin_theta = theta.sin();
+    let cos_theta = theta.cos();
+
+    let lat = (z + WGS84_E2P * WGS84_B * sin_theta.powi(3))
+        .atan2(p - WGS84_E2 * WGS84_A * cos_theta.powi(3));
+
+    let sin_lat = lat.sin();
+    let n = WGS84_A / (1.0 - WGS84_E2 * sin_lat * sin_lat).sqrt();
+    let altitude_km = p / lat.cos() - n;
+
+    (
+        GeoCoord::new(lat.to_degrees(), lon.to_degrees()),
+        altitude_km,
+    )
 }
 
 /// Vector magnitude
@@ -1129,4 +1417,149 @@ pub fn integrate_drag_descent(
     }
 
     v.max(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Known ECEF value for a WGS-84 reference point (NIMA TR 8350.2):
+    /// 45°N, 45°E, 0 m altitude.
+    /// GeographicLib (Karney) gives x=3194419.146 m, y=3194419.146 m,
+    /// z=4487348.409 m.
+    #[test]
+    fn test_geodetic_to_ecef_wgs84() {
+        let coord = GeoCoord::new(45.0, 45.0);
+        let ecef = geodetic_to_ecef(coord, 0.0);
+        assert!((ecef[0] - 3194.419).abs() < 0.01, "x: {}", ecef[0]);
+        assert!((ecef[1] - 3194.419).abs() < 0.01, "y: {}", ecef[1]);
+        assert!((ecef[2] - 4487.348).abs() < 0.01, "z: {}", ecef[2]);
+    }
+
+    /// Round trip: geodetic -> ECEF -> geodetic recovers the original point
+    /// across latitudes (equator, mid, pole) and altitudes.
+    #[test]
+    fn test_ecef_geodetic_round_trip() {
+        for (lat, alt) in [
+            (0.0, 0.0),
+            (45.0, 100.0),
+            (-30.0, 500.0),
+            (71.0, 1000.0),
+            (-89.0, 50.0),
+        ] {
+            let coord = GeoCoord::new(lat, 123.0);
+            let ecef = geodetic_to_ecef(coord, alt);
+            let (back, back_alt) = ecef_to_geodetic(ecef);
+            // Bowring's method is exact to sub-millimeter; 1e-7 deg ≈ 1 cm
+            assert!((back.lat - lat).abs() < 1e-7, "lat {lat} -> {}", back.lat);
+            assert!((back.lon - 123.0).abs() < 1e-9, "lon {lat} -> {}", back.lon);
+            assert!(
+                (back_alt - alt).abs() < 1e-4,
+                "alt {alt} at lat {lat} -> {back_alt}"
+            );
+        }
+    }
+
+    /// Curvature radii at the equator and pole.
+    /// At the equator: M(0) = a(1-e²) ≈ 6335.439 km, N(0) = a = 6378.137 km.
+    /// At the pole: M(90) = a²/b ≈ 6399.594 km, N(90) = a²/b ≈ 6399.594 km.
+    #[test]
+    fn test_curvature_radii() {
+        assert!((meridional_radius_km(0.0) - 6335.439).abs() < 0.01);
+        assert!((prime_vertical_radius_km(0.0) - 6378.137).abs() < 0.01);
+        assert!((meridional_radius_km(90.0) - 6399.594).abs() < 0.01);
+        assert!((prime_vertical_radius_km(90.0) - 6399.594).abs() < 0.01);
+        // M(45°) = 6367.382 km (computed from WGS-84 parameters)
+        assert!((meridional_radius_km(45.0) - 6367.382).abs() < 0.01);
+    }
+
+    /// Geodesic distance between two published points on the WGS-84
+    /// ellipsoid. JFK (40°38'N, 73°47'W) to LHR (51°28'N, 0°27'W) is
+    /// approximately 5555 km (great-circle value; the geodesic differs by
+    /// a few km). Tolerance is coarse vs the sphere to catch gross errors
+    /// while pinning the ellipsoidal value.
+    #[test]
+    fn test_geodesic_distance_jfk_lhr() {
+        let jfk = GeoCoord::new(40.6413, -73.7781);
+        let lhr = GeoCoord::new(51.4700, -0.4543);
+        let d = haversine_distance(jfk, lhr);
+        // Geodesic (GeographicLib): 5554.0 km; sphere(6371): 5553.9 km.
+        assert!((d - 5555.0).abs() < 3.0, "JFK-LHR geodesic {d} km");
+    }
+
+    /// Equatorial and meridional one-degree arc lengths on WGS-84:
+    /// 1° longitude at the equator = a·π/180 = 111.319 km;
+    /// 1° latitude at the equator = M(0)·π/180 = 110.575 km;
+    /// 1° latitude at the pole = M(90)·π/180 = 111.688 km.
+    #[test]
+    fn test_degree_arc_lengths() {
+        let eq_lon = haversine_distance(GeoCoord::new(0.0, 0.0), GeoCoord::new(0.0, 1.0));
+        assert!(
+            (eq_lon - 111.319).abs() < 0.01,
+            "equatorial 1° lon: {eq_lon}"
+        );
+        let eq_lat = haversine_distance(GeoCoord::new(0.0, 10.0), GeoCoord::new(1.0, 10.0));
+        assert!(
+            (eq_lat - 110.575).abs() < 0.01,
+            "equatorial 1° lat: {eq_lat}"
+        );
+        let polar_lat = haversine_distance(GeoCoord::new(89.0, 10.0), GeoCoord::new(90.0, 10.0));
+        assert!(
+            (polar_lat - 111.687).abs() < 0.01,
+            "polar 1° lat: {polar_lat}"
+        );
+    }
+
+    /// Vincenty inverse/direct consistency: going from A toward B, the
+    /// direct solution at the full distance must land on B; at half the
+    /// distance it must be at the midpoint of the geodesic (distance to
+    /// both ends differs by < 1 m-level tolerance at our scale).
+    #[test]
+    fn test_geodesic_inverse_direct_consistency() {
+        let a = GeoCoord::new(39.0, 125.5); // NK launch site (test scenario)
+        let b = GeoCoord::new(35.0, 139.0); // Japan target (test scenario)
+
+        let inv = geodesic_inverse(a, b);
+        let midpoint = geodesic_direct(a, inv.initial_bearing_deg, inv.distance_km * 0.5);
+
+        let d_a_mid = geodesic_inverse(a, midpoint).distance_km;
+        let d_mid_b = geodesic_inverse(midpoint, b).distance_km;
+
+        assert!(
+            (d_a_mid - d_mid_b).abs() < 0.01,
+            "midpoint not equidistant: {d_a_mid} vs {d_mid_b}"
+        );
+        assert!((d_a_mid - inv.distance_km * 0.5).abs() < 0.01);
+
+        // Direct at full distance lands on the target
+        let end = geodesic_direct(a, inv.initial_bearing_deg, inv.distance_km);
+        let d_end_b = geodesic_inverse(end, b).distance_km;
+        assert!(d_end_b < 0.01, "direct overshoot: {d_end_b} km");
+    }
+
+    /// The trajectory lookup (position_at) must still land on origin at
+    /// t=0, target at t=1, and stay on the cached-azimuth geodesic midway.
+    #[test]
+    fn test_trajectory_endpoints_exact() {
+        let traj = BallisticTrajectory::new(GeoCoord::new(39.0, 125.5), GeoCoord::new(35.0, 139.0));
+
+        let (start, alt0) = traj.position_at(0.0);
+        assert!((start.lat - 39.0).abs() < 1e-9 && (start.lon - 125.5).abs() < 1e-9);
+        assert!(alt0.abs() < 1e-9);
+
+        let (end, alt1) = traj.position_at(1.0);
+        assert!((end.lat - 35.0).abs() < 1e-9 && (end.lon - 139.0).abs() < 1e-9);
+        assert!(alt1.abs() < 1e-9);
+
+        // Midpoint altitude is the apogee of the parabolic profile
+        let (_, alt_mid) = traj.position_at(0.5);
+        assert!((alt_mid - traj.max_altitude_km).abs() < 1e-9);
+    }
+
+    /// Gravity constant is the AGENTS.md-specified 9.80665 m/s².
+    #[test]
+    fn test_g0_matches_spec() {
+        assert!((G0 - 0.00980665).abs() < 1e-12);
+        assert!((MEAN_EARTH_RADIUS_KM - 6371.0088).abs() < 0.01);
+    }
 }

@@ -44,3 +44,10 @@ max_fire_control_tracks = 3
 search_dwell_time_ms = 25.0          # Moderate search scans
 track_dwell_time_ms = 120.0          # Standard tracking
 fire_control_dwell_time_ms = 600.0   # Terminal guidance with illumination
+
+# Sensor calibration bias (Phase 4: realistic systematic measurement error)
+# Phased arrays are boresighted to ~0.05-0.2 deg; range calibration to tens
+# of meters. Deterministic per-sensor offset consumed by the EKF.
+azimuth_bias_deg = 0.12
+elevation_bias_deg = 0.10
+range_bias_km = 0.04

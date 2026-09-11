@@ -31,3 +31,38 @@
 - Always calculate a confidence in the computed target's trajectory
 - Always refine a computed target's trajectory with additional radar information over time
 - Always compute an interception point on the computed target's trajectory that is within the platform's interceptor's performance envelop
+
+## Measurement Error Model (Phase 4) ##
+
+Radar measurements carry realistic error, injected at measurement creation
+(`create_radar_measurement`):
+
+- **Calibration bias** — deterministic per-sensor offsets from the sensor
+  TOML's `[tracking]` section: `azimuth_bias_deg`, `elevation_bias_deg`,
+  `range_bias_km`. Phased arrays are boresighted tight (0.04-0.16 deg in
+  the shipped configs, Skolnik radar-calibration practice); the mechanical
+  default is looser (0.35 deg).
+- **Stochastic noise** — zero-mean Gaussian per measurement (Box-Muller),
+  scaled by detection quality: ~0.01-0.1 km range, ~0.05-0.5 deg angle.
+  `noise_multiplier` (default 1.0) scales it for degraded sensors.
+
+Design decisions:
+- The **EKF measurement and the Detection position share one bearing
+  realization** — the raw-measurement path and the converted-position path
+  (linear KF, track initialization) see the same perturbed azimuth.
+- The Detection's `range_km` keeps its mode-dependent semantics (ground vs
+  slant); bias+noise are applied to both quantities independently.
+- `Detection.altitude_km` deliberately remains the true altitude: the
+  converged-trajectory altitude fit is calibrated against the true
+  parabolic profile. Deriving altitude from noisy elevation would inject a
+  flat-earth systematic into the trajectory estimator. (Track *quality*
+  still reflects measurement noise through the innovation machinery.)
+- The EKF's R-matrix is built from the same noise_std, so filter covariance
+  now reflects actual measurement scatter; the innovation-monitoring
+  machinery (consistency factors, track health) penalizes biased sensors
+  in fusion weights.
+
+Determinism: all detection stochasticity (measurement noise, detection
+rolls, false alarms) flows through a `DetectionSystem`-owned `StdRng`
+seeded from entropy in production; tests call `engine.detection.seed_rng(n)`
+for reproducible scenarios.

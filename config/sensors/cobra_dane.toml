@@ -32,3 +32,10 @@ track_update_rate_hz = 1.0
 minimum_rcs_dbsm = -30.0
 # Maximum fire control tracks
 max_fire_control_tracks = 10
+
+# Sensor calibration bias (Phase 4: realistic systematic measurement error)
+# Phased arrays are boresighted to ~0.05-0.2 deg; range calibration to tens
+# of meters. Deterministic per-sensor offset consumed by the EKF.
+azimuth_bias_deg = 0.14
+elevation_bias_deg = 0.11
+range_bias_km = 0.05

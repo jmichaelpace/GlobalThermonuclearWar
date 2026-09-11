@@ -42,6 +42,7 @@ fn assess(engine: &SimulationEngine) -> AlertLevel {
 #[test]
 fn test_alert_level_escalates_with_tracked_threat() {
     let mut engine = SimulationEngine::new();
+    engine.detection.seed_rng(42);
     engine.time_scale = TimeScale::RealTime;
 
     // NK -> Japan MRBM with an AEGIS platform in the Sea of Japan
@@ -103,6 +104,7 @@ fn test_klaxon_tracker_escalation_lifecycle() {
 fn test_no_tracks_stays_defcon5() {
     // Engine with no hostiles: level never leaves DEFCON 5, no klaxon
     let mut engine = SimulationEngine::new();
+    engine.detection.seed_rng(42);
     engine.time_scale = TimeScale::RealTime;
     engine.add_defense_unit(
         "Lone AEGIS".to_string(),

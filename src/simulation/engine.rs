@@ -1508,7 +1508,7 @@ impl SimulationEngine {
                 // Limit heading rate based on interceptor maneuverability
                 // Max turn rate depends on g-capability and velocity
                 let kin = InterceptorKinematics::for_defense_type(interceptor.defense_type);
-                let max_lateral_accel = kin.terminal_maneuver_g * 0.00981; // km/s²
+                let max_lateral_accel = kin.terminal_maneuver_g * crate::simulation::physics::G0; // km/s^2
                 let max_heading_rate =
                     max_lateral_accel / interceptor.current_velocity_km_s.max(0.1);
                 let limited_heading_rate =

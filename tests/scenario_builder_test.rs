@@ -266,6 +266,7 @@ fn test_draft_to_engine_chain() {
     let reparsed: ScenarioFile = toml::from_str(&toml_text).expect("re-parse");
 
     let mut engine = SimulationEngine::new();
+    engine.detection.seed_rng(42);
     reparsed.load_into_engine(&mut engine);
 
     assert_eq!(engine.defense_units.len(), 1, "defense unit count");

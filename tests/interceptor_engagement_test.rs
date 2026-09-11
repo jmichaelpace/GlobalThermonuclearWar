@@ -44,6 +44,9 @@ fn haversine_distance(p1: GeoCoord, p2: GeoCoord) -> f64 {
 fn setup_aegis_vs_mrbm(interceptor_count: u32) -> SimulationEngine {
     let mut engine = SimulationEngine::new();
     engine.time_scale = TimeScale::RealTime;
+    // Deterministic measurement noise (realistic calibration bias + seeded
+    // Gaussian scatter); the engagement geometry itself is unchanged
+    engine.detection.seed_rng(42);
 
     engine.add_defense_unit(
         "Test AEGIS".to_string(),
@@ -120,6 +123,7 @@ fn test_aegis_intercepts_mrbm_deterministic() {
 fn test_thaad_cannot_engage_icbm_apogee() {
     let mut engine = SimulationEngine::new();
     engine.time_scale = TimeScale::RealTime;
+    engine.detection.seed_rng(42);
 
     // THAAD battery positioned under the ICBM flight path
     engine.add_defense_unit(
@@ -173,6 +177,7 @@ fn test_thaad_cannot_engage_icbm_apogee() {
 fn test_no_launch_without_fire_control_track() {
     let mut engine = SimulationEngine::new();
     engine.time_scale = TimeScale::RealTime;
+    engine.detection.seed_rng(42);
 
     // Aegis placed FAR from the missile's flight path: the missile is never
     // detected, so no track is ever established. Fire control must refuse to
@@ -283,6 +288,7 @@ fn test_salvo_continues_after_miss() {
 fn test_post_miss_command_destruct_mid_course() {
     let mut engine = SimulationEngine::new();
     engine.time_scale = TimeScale::RealTime;
+    engine.detection.seed_rng(42);
 
     let missile_id = engine.add_missile(
         "Staged MRBM".to_string(),
@@ -420,6 +426,7 @@ fn test_no_chase_launch_on_receding_target() {
 
     let mut engine = SimulationEngine::new();
     engine.time_scale = TimeScale::RealTime;
+    engine.detection.seed_rng(42);
 
     // Aegis positioned near the missile's TARGET (far side of the flight):
     // the missile only becomes detectable as it approaches the platform's

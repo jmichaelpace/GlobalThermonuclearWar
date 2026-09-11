@@ -484,7 +484,9 @@ impl Satellite {
 
     /// Calculate coverage radius on Earth's surface in km
     pub fn coverage_radius_km(&self) -> f64 {
-        let earth_radius_km = 6371.0;
+        // IUGG mean radius (ellipsoidal coverage cones are azimuth-dependent;
+        // the mean radius keeps the published spec semantics)
+        let earth_radius_km = 6371.0088;
         let angle_rad = self.coverage_angle_deg.to_radians();
         // Simplified calculation
         (self.altitude_km + earth_radius_km) * angle_rad.tan()
@@ -785,7 +787,7 @@ impl InterceptorKinematics {
             return 0.0;
         }
 
-        let g_to_km_s2 = 0.00981; // Convert g to km/s²
+        let g_to_km_s2 = crate::simulation::physics::G0; // Convert g to km/s^2
 
         if time_sec <= self.boost_duration_sec {
             // Boost phase: accelerating
@@ -803,7 +805,7 @@ impl InterceptorKinematics {
             return 0.0;
         }
 
-        let g_to_km_s2 = 0.00981;
+        let g_to_km_s2 = crate::simulation::physics::G0;
         let acceleration = self.boost_acceleration_g * g_to_km_s2;
 
         if time_sec <= self.boost_duration_sec {
@@ -841,7 +843,7 @@ impl InterceptorKinematics {
             return Some(0.0);
         }
 
-        let g_to_km_s2 = 0.00981;
+        let g_to_km_s2 = crate::simulation::physics::G0;
         let acceleration = self.boost_acceleration_g * g_to_km_s2;
         let boost_duration = self.boost_duration_sec;
 

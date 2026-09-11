@@ -528,10 +528,31 @@ pub struct SensorTrackingConfig {
     pub track_dwell_time_ms: f64,
     #[serde(default = "default_fc_dwell_ms")]
     pub fire_control_dwell_time_ms: f64,
+    /// Systematic azimuth calibration bias (degrees). Deterministic offset
+    /// per sensor — modern phased arrays are boresighted to ~0.05-0.15°,
+    /// mechanical radars 0.2-0.5° (Skolnik, Radar Handbook, "Radar
+    /// Calibration" practices).
+    #[serde(default)]
+    pub azimuth_bias_deg: f64,
+    /// Systematic elevation calibration bias (degrees)
+    #[serde(default)]
+    pub elevation_bias_deg: f64,
+    /// Systematic range calibration bias (km). Typical radar range
+    /// calibration errors are tens of meters (Skolnik).
+    #[serde(default)]
+    pub range_bias_km: f64,
+    /// Stochastic measurement noise multiplier (1.0 = nominal noise from
+    /// the quality-scaled defaults). Set > 1.0 for degraded sensors.
+    #[serde(default = "default_noise_multiplier")]
+    pub noise_multiplier: f64,
 }
 
 fn default_max_fc_tracks() -> u32 {
     2 // Conservative default for fire control tracks
+}
+
+fn default_noise_multiplier() -> f64 {
+    1.0 // Nominal stochastic measurement noise
 }
 
 fn default_search_dwell_ms() -> f64 {
@@ -636,6 +657,15 @@ impl SensorConfigRegistry {
             .unwrap_or(&self.default_config)
     }
 
+    /// Mutable access to a named sensor config (test seam for injecting
+    /// calibration error; also usable for runtime recalibration)
+    pub fn get_by_name_mut(&mut self, sensor_name: &str) -> &mut SensorConfig {
+        let normalized = Self::normalize_name(sensor_name);
+        self.configs
+            .get_mut(&normalized)
+            .unwrap_or(&mut self.default_config)
+    }
+
     fn hardcoded_default() -> SensorConfig {
         SensorConfig {
             system: SystemInfo {
@@ -665,6 +695,10 @@ impl SensorConfigRegistry {
                 search_dwell_time_ms: 20.0,
                 track_dwell_time_ms: 100.0,
                 fire_control_dwell_time_ms: 500.0,
+                azimuth_bias_deg: 0.0,
+                elevation_bias_deg: 0.0,
+                range_bias_km: 0.0,
+                noise_multiplier: 1.0,
             },
         }
     }

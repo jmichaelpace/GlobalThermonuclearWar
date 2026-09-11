@@ -32,6 +32,7 @@ fn haversine_distance(p1: GeoCoord, p2: GeoCoord) -> f64 {
 /// engagement, so the missile flies its full natural trajectory).
 fn setup_test_scenario() -> SimulationEngine {
     let mut engine = SimulationEngine::new();
+    engine.detection.seed_rng(42);
     engine.time_scale = TimeScale::RealTime;
 
     let launch_site = GeoCoord::new(39.0, 125.5);

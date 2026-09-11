@@ -8,14 +8,16 @@
 //! - State transition Jacobian computed at each step (depends on current state)
 //! - Nonlinear measurement model for radar (range/azimuth/elevation)
 //! - Measurement Jacobian computed at each step
+//!
+//! Earth model: WGS-84 ellipsoid. Horizontal motion uses the meridional
+//! radius of curvature M(φ) (north) and prime vertical radius N(φ) (east),
+//! matching the geodetic rate equations
+//! dφ/dt = v_n / M, dλ/dt = v_e / (N·cos φ).
 
+use crate::simulation::physics::{
+    geodetic_to_ecef, meridional_radius_km, prime_vertical_radius_km, G0,
+};
 use crate::types::GeoCoord;
-
-/// Earth radius in km
-const EARTH_RADIUS_KM: f64 = 6371.0;
-
-/// Gravitational acceleration at sea level (km/s²)
-const G0: f64 = 0.00981;
 
 /// Extended Kalman Filter state in geodetic coordinates
 ///
@@ -82,9 +84,10 @@ impl EKFState {
         let pos_var_horiz = range_var + (measurement.range_km * angle_var).powi(2);
         let pos_var_vert = range_var;
 
-        // Convert to lat/lon variance (approximate)
-        let lat_var = pos_var_horiz / (EARTH_RADIUS_KM.powi(2));
-        let lon_var = pos_var_horiz / ((EARTH_RADIUS_KM * pos.lat.to_radians().cos()).powi(2));
+        // Convert to lat/lon variance (approximate, using local curvature)
+        let lat_var = pos_var_horiz / (meridional_radius_km(pos.lat).powi(2));
+        let lon_var = pos_var_horiz
+            / ((prime_vertical_radius_km(pos.lat) * pos.lat.to_radians().cos()).powi(2));
 
         // Large velocity uncertainty initially
         let vel_var = 1.0; // 1 km/s std dev
@@ -115,10 +118,11 @@ impl EKFState {
             0.0,
         ];
 
-        // Conservative initial covariance
+        // Conservative initial covariance (2 km position uncertainty
+        // expressed via curvature radii at the initial latitude)
         let mut P = [0.0; 36];
-        P[0] = (2.0 / EARTH_RADIUS_KM).powi(2); // ~2km position uncertainty
-        P[7] = (2.0 / EARTH_RADIUS_KM).powi(2);
+        P[0] = (2.0 / meridional_radius_km(pos.lat)).powi(2); // ~2km position uncertainty
+        P[7] = (2.0 / (prime_vertical_radius_km(pos.lat) * pos.lat.to_radians().cos())).powi(2);
         P[14] = 1.0; // 1km altitude uncertainty
         P[21] = 1.0; // 1 km/s velocity uncertainty
         P[28] = 1.0;
@@ -156,10 +160,10 @@ impl EKFState {
 
     /// Get position uncertainty (average std dev in km)
     pub fn get_position_uncertainty(&self) -> f64 {
-        // Convert lat/lon variance to km variance
-        let lat = self.x[0];
-        let lat_var_km = self.P[0] * EARTH_RADIUS_KM.powi(2);
-        let lon_var_km = self.P[7] * (EARTH_RADIUS_KM * lat.cos()).powi(2);
+        // Convert lat/lon variance to km variance via curvature radii
+        let lat_deg = self.x[0].to_degrees();
+        let lat_var_km = self.P[0] * meridional_radius_km(lat_deg).powi(2);
+        let lon_var_km = self.P[7] * (prime_vertical_radius_km(lat_deg) * self.x[0].cos()).powi(2);
         let alt_var_km = self.P[14];
 
         ((lat_var_km + lon_var_km + alt_var_km) / 3.0).sqrt()
@@ -190,16 +194,17 @@ impl EKFState {
         let lon1 = older_pos.lon.to_radians();
         let lon2 = newer_pos.lon.to_radians();
 
-        // Average radius at mid-altitude
+        // Curvature radii at the mid-latitude of the pair (WGS-84)
+        let avg_lat = (lat1 + lat2) / 2.0;
         let avg_alt = (older_alt + newer_alt) / 2.0;
-        let r = EARTH_RADIUS_KM + avg_alt;
+        let r_m = meridional_radius_km(avg_lat.to_degrees()) + avg_alt;
+        let r_n = prime_vertical_radius_km(avg_lat.to_degrees()) + avg_alt;
 
         // Velocity in north direction (from latitude change)
-        let v_north = (lat2 - lat1) * r / dt;
+        let v_north = (lat2 - lat1) * r_m / dt;
 
         // Velocity in east direction (from longitude change, accounting for latitude)
-        let avg_lat = (lat1 + lat2) / 2.0;
-        let v_east = (lon2 - lon1) * r * avg_lat.cos() / dt;
+        let v_east = (lon2 - lon1) * r_n * avg_lat.cos() / dt;
 
         // Vertical velocity from altitude change
         let v_up = (newer_alt - older_alt) / dt;
@@ -252,20 +257,26 @@ impl EKFState {
     /// Returns predicted state after time dt
     fn f(&self, dt: f64) -> [f64; 6] {
         let (lat, lon, alt, v_n, v_e, v_u) = self.unpack();
+        let lat_deg = lat.to_degrees();
 
-        // Earth radius at current altitude
-        let r = EARTH_RADIUS_KM + alt;
+        // WGS-84 curvature radii at current altitude
+        let r_m = meridional_radius_km(lat_deg) + alt;
+        let r_n = prime_vertical_radius_km(lat_deg) + alt;
 
-        // Local gravity with altitude correction
-        let g_local = G0 * (EARTH_RADIUS_KM / r).powi(2);
+        // Local gravity with altitude correction (inverse-square about the
+        // mean Earth radius)
+        let g_local = G0
+            * (crate::simulation::physics::MEAN_EARTH_RADIUS_KM
+                / (crate::simulation::physics::MEAN_EARTH_RADIUS_KM + alt))
+                .powi(2);
 
-        // Geodetic rate equations (accounts for Earth curvature)
-        // dlat/dt = v_north / r
-        // dlon/dt = v_east / (r * cos(lat))
+        // Geodetic rate equations (WGS-84 ellipsoidal curvature)
+        // dlat/dt = v_north / M(phi)
+        // dlon/dt = v_east / (N(phi) * cos(lat))
         // dalt/dt = v_up - 0.5 * g * dt (include gravity term)
 
-        let lat_new = lat + (v_n / r) * dt;
-        let lon_new = lon + (v_e / (r * lat.cos())) * dt;
+        let lat_new = lat + (v_n / r_m) * dt;
+        let lon_new = lon + (v_e / (r_n * lat.cos())) * dt;
         let alt_new = alt + v_u * dt - 0.5 * g_local * dt.powi(2);
 
         // Velocity changes - only vertical velocity affected by gravity
@@ -279,11 +290,24 @@ impl EKFState {
     /// State transition Jacobian F = df/dx evaluated at current state
     /// This is what makes it "extended" - F depends on x
     fn F(&self, dt: f64) -> [f64; 36] {
+        use crate::simulation::physics::{WGS84_A, WGS84_E2};
         let (lat, _lon, alt, _v_n, v_e, _v_u) = self.unpack();
+        let lat_deg = lat.to_degrees();
 
-        let r = EARTH_RADIUS_KM + alt;
         let cos_lat = lat.cos();
         let sin_lat = lat.sin();
+
+        // WGS-84 curvature radii and their latitude derivatives.
+        // M = a(1-e²)/(1-e²s²)^{3/2}; N = a/(1-e²s²)^{1/2}
+        // d(1/M)/dφ = 3e²·s·c·√(1-e²s²) / (a(1-e²))
+        // d(1/N)/dφ = e²·s·c / (a·√(1-e²s²))
+        let m = meridional_radius_km(lat_deg);
+        let n = prime_vertical_radius_km(lat_deg);
+        let r_m = m + alt;
+        let r_n = n + alt;
+        let k = 1.0 - WGS84_E2 * sin_lat * sin_lat;
+        let d_inv_m = 3.0 * WGS84_E2 * sin_lat * cos_lat * k.sqrt() / (WGS84_A * (1.0 - WGS84_E2));
+        let d_inv_n = WGS84_E2 * sin_lat * cos_lat / (WGS84_A * k.sqrt());
 
         // Partial derivatives of f with respect to state
         // F[i][j] = df_i / dx_j
@@ -294,26 +318,31 @@ impl EKFState {
             F[i * 6 + i] = 1.0;
         }
 
-        // Velocity contributes to position
-        // df_lat/dv_n = dt / r (row 0, col 3)
-        F[3] = dt / r;
+        // df_lat/dv_n = dt / M (row 0, col 3)
+        F[3] = dt / r_m;
+        // df_lat/dlat = 1 + v_n · d(1/M)/dφ · dt (identity + curvature
+        // derivative; the derivative is e²-scale small but included for
+        // correctness)
+        F[0] += self.x[3] * d_inv_m * dt;
 
-        // df_lon/dlat = v_e * sin(lat) * dt / (r * cos(lat)^2)
+        // df_lon/dlat = identity + v_e · [d(1/N)/dφ / cos(lat) + tan(lat)/N] · dt
         if cos_lat.abs() > 1e-10 {
-            F[1 * 6 + 0] = v_e * sin_lat * dt / (r * cos_lat.powi(2));
-            // df_lon/dv_e = dt / (r * cos(lat))
-            F[1 * 6 + 4] = dt / (r * cos_lat);
+            F[6] += v_e * (d_inv_n / cos_lat + (1.0 / r_n) * (sin_lat / cos_lat)) * dt;
+            // df_lon/dv_e = dt / (N · cos(lat))
+            F[10] = dt / (r_n * cos_lat);
         }
 
         // df_alt/dv_u = dt
-        F[2 * 6 + 5] = dt;
+        F[17] = dt;
 
-        // df_alt/dalt (gravity correction term)
-        let g_deriv = 2.0 * G0 * EARTH_RADIUS_KM.powi(2) / r.powi(3);
-        F[2 * 6 + 2] = 1.0 + 0.5 * g_deriv * dt.powi(2);
+        // df_alt/dalt (gravity correction term; inverse-square about the
+        // mean radius)
+        let g_deriv = 2.0 * G0 * crate::simulation::physics::MEAN_EARTH_RADIUS_KM.powi(2)
+            / (crate::simulation::physics::MEAN_EARTH_RADIUS_KM + alt).powi(3);
+        F[14] = 1.0 + 0.5 * g_deriv * dt.powi(2);
 
         // df_v_u/dalt (gravity depends on altitude)
-        F[5 * 6 + 2] = g_deriv * dt;
+        F[32] = g_deriv * dt;
 
         F
     }
@@ -330,8 +359,9 @@ impl EKFState {
         // Velocity process noise (small - no thrust after boost)
         let q_vel = 0.001 * dt; // (km/s)²
 
-        Q[0] = q_pos / EARTH_RADIUS_KM.powi(2); // lat variance
-        Q[7] = q_pos / EARTH_RADIUS_KM.powi(2); // lon variance
+        let lat_deg = self.x[0].to_degrees();
+        Q[0] = q_pos / meridional_radius_km(lat_deg).powi(2); // lat variance
+        Q[7] = q_pos / (prime_vertical_radius_km(lat_deg) * self.x[0].cos()).powi(2); // lon variance
         Q[14] = q_pos; // alt variance
         Q[21] = q_vel; // v_n variance
         Q[28] = q_vel; // v_e variance
@@ -368,11 +398,12 @@ impl EKFState {
     /// Nonlinear measurement function h(x, sensor)
     /// Predicts what radar would observe given current state
     fn h(&self, sensor_pos: GeoCoord, sensor_alt: f64) -> [f64; 3] {
-        let (lat, lon, alt, _, _, _) = self.unpack();
+        let (_, _, alt, _, _, _) = self.unpack();
 
-        // Convert state to Cartesian ECEF
-        let target_ecef = geodetic_to_ecef(lat.to_degrees(), lon.to_degrees(), alt);
-        let sensor_ecef = geodetic_to_ecef(sensor_pos.lat, sensor_pos.lon, sensor_alt);
+        // Convert state to Cartesian ECEF (WGS-84)
+        let (state_pos, _) = self.get_position();
+        let target_ecef = geodetic_to_ecef(state_pos, alt);
+        let sensor_ecef = geodetic_to_ecef(sensor_pos, sensor_alt);
 
         // Vector from sensor to target
         let dx = target_ecef[0] - sensor_ecef[0];
@@ -495,18 +526,8 @@ impl EKFState {
 
 // === Coordinate Transformations ===
 
-/// Convert geodetic (lat, lon, alt) to ECEF Cartesian coordinates
-fn geodetic_to_ecef(lat_deg: f64, lon_deg: f64, alt_km: f64) -> [f64; 3] {
-    let lat = lat_deg.to_radians();
-    let lon = lon_deg.to_radians();
-    let r = EARTH_RADIUS_KM + alt_km;
-
-    [
-        r * lat.cos() * lon.cos(),
-        r * lat.cos() * lon.sin(),
-        r * lat.sin(),
-    ]
-}
+// geodetic_to_ecef is now the shared WGS-84 implementation in
+// crate::simulation::physics (this module re-exports it via the use at top).
 
 /// Convert ECEF difference vector to local ENU at observer location
 fn ecef_to_enu(dx: f64, dy: f64, dz: f64, obs_lat_deg: f64, obs_lon_deg: f64) -> (f64, f64, f64) {
@@ -527,6 +548,9 @@ fn ecef_to_enu(dx: f64, dy: f64, dz: f64, obs_lat_deg: f64, obs_lon_deg: f64) ->
 }
 
 /// Convert radar measurement (range, azimuth, elevation) to geodetic position
+///
+/// Uses the WGS-84 local curvature radii for the small-area ENU-to-geodetic
+/// conversion (valid for the km-scale offsets of radar measurements).
 pub fn radar_to_geodetic(
     sensor_pos: GeoCoord,
     sensor_alt: f64,
@@ -540,9 +564,11 @@ pub fn radar_to_geodetic(
     let n = horizontal_range * azimuth_rad.cos();
     let u = range_km * elevation_rad.sin();
 
-    // Convert ENU offset to geodetic
-    let lat_offset = n / EARTH_RADIUS_KM;
-    let lon_offset = e / (EARTH_RADIUS_KM * sensor_pos.lat.to_radians().cos());
+    // Convert ENU offset to geodetic via curvature radii at the sensor
+    let lat_offset = n / (meridional_radius_km(sensor_pos.lat) + sensor_alt);
+    let lon_offset = e
+        / ((prime_vertical_radius_km(sensor_pos.lat) + sensor_alt)
+            * sensor_pos.lat.to_radians().cos());
 
     let target_pos = GeoCoord::new(
         sensor_pos.lat + lat_offset.to_degrees(),

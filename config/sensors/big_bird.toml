@@ -32,3 +32,10 @@ minimum_rcs_dbsm = -10.0
 radar_band = "S"  # S-band - search and acquisition
 # Maximum fire control tracks - number of targets that can receive terminal guidance simultaneously
 max_fire_control_tracks = 2
+
+# Sensor calibration bias (Phase 4: realistic systematic measurement error)
+# Phased arrays are boresighted to ~0.05-0.2 deg; range calibration to tens
+# of meters. Deterministic per-sensor offset consumed by the EKF.
+azimuth_bias_deg = 0.15
+elevation_bias_deg = 0.12
+range_bias_km = 0.05

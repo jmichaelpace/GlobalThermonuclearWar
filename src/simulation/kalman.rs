@@ -60,8 +60,8 @@ impl BallisticState {
         // Ballistic motion: constant horizontal velocity, vertical acceleration due to gravity
         // Use altitude-dependent gravity: g(h) = g0 × (R_earth / (R_earth + h))²
         // Reference: Same model as EKF for consistency
-        const G0: f64 = 0.00981; // km/s² (standard gravity at sea level)
-        const EARTH_RADIUS_KM: f64 = 6371.0;
+        const G0: f64 = 0.00980665; // km/s² (standard gravity, 9.80665 m/s²)
+        const EARTH_RADIUS_KM: f64 = 6371.0088; // IUGG mean radius
 
         // Current altitude is position[2] (up component in ENU)
         let altitude_km = self.position[2].max(0.0);
@@ -292,29 +292,36 @@ impl BallisticState {
 // === Coordinate Transformations ===
 
 /// Convert geographic coordinates to local East-North-Up (ENU) frame
+///
+/// Uses WGS-84 curvature radii at the reference latitude: north-south
+/// distances scale by the meridional radius M(φ), east-west by the prime
+/// vertical radius N(φ)·cos(φ).
 fn geo_to_enu(point: GeoCoord, altitude_km: f64, reference: GeoCoord) -> [f64; 3] {
-    const EARTH_RADIUS_KM: f64 = 6371.0;
+    use crate::simulation::physics::{meridional_radius_km, prime_vertical_radius_km};
 
     let lat_diff = (point.lat - reference.lat).to_radians();
     let lon_diff = (point.lon - reference.lon).to_radians();
     let ref_lat = reference.lat.to_radians();
 
-    // Approximate ENU for small distances
-    let east = EARTH_RADIUS_KM * lon_diff * ref_lat.cos();
-    let north = EARTH_RADIUS_KM * lat_diff;
+    // Approximate ENU for small distances (curvature radii at reference)
+    let east = prime_vertical_radius_km(reference.lat) * lon_diff * ref_lat.cos();
+    let north = meridional_radius_km(reference.lat) * lat_diff;
     let up = altitude_km;
 
     [east, north, up]
 }
 
 /// Convert local ENU coordinates back to geographic
+///
+/// Inverse of geo_to_enu with the same WGS-84 curvature radii.
 fn enu_to_geo(enu: [f64; 3], reference: GeoCoord) -> (GeoCoord, f64) {
-    const EARTH_RADIUS_KM: f64 = 6371.0;
+    use crate::simulation::physics::{meridional_radius_km, prime_vertical_radius_km};
 
     let ref_lat = reference.lat.to_radians();
 
-    let lat_diff = (enu[1] / EARTH_RADIUS_KM).to_degrees();
-    let lon_diff = (enu[0] / (EARTH_RADIUS_KM * ref_lat.cos())).to_degrees();
+    let lat_diff = (enu[1] / meridional_radius_km(reference.lat)).to_degrees();
+    let lon_diff =
+        (enu[0] / (prime_vertical_radius_km(reference.lat) * ref_lat.cos())).to_degrees();
 
     let position = GeoCoord::new(reference.lat + lat_diff, reference.lon + lon_diff);
 

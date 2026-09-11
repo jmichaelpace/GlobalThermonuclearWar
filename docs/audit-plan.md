@@ -21,7 +21,7 @@ This document captures the audit of the simulation codebase against the domain r
 | **F2T2EA Kill Chain** | Mostly complete - Find through Assess | `engine.rs` |
 | **Envelope Validation** | Full - altitude, range, time validation | `engine.rs:2027-2030` |
 | **Mid-Course Guidance** | Full - EKF/KF prediction updates | `engine.rs:722-950` |
-| **Standard Gravity** | Correct (9.80665 m/s² → 0.00981 km/s²) | `ekf.rs:18`, `kalman.rs:62` |
+| **Standard Gravity** | Correct (9.80665 m/s² → 0.00980665 km/s²) | shared `physics::G0` (all sites) |
 | **Earth Curvature** | Good - spherical model with geodetic handling | `physics.rs`, `ekf.rs` |
 | **Shoot-Look-Shoot / Salvo** | Basic - time-based heuristic | `engine.rs:1796-1797` |
 
@@ -73,8 +73,9 @@ This document captures the audit of the simulation codebase against the domain r
 |-----|--------|-------|
 | ~~RCS aspect-angle variation~~ | ✅ FIXED | Now varies ±1.5dB based on nose/broadside/tail aspect |
 | Radar clutter modeling | Pending | False alarms exist but not from clutter physics |
+| ~~Measurement error model~~ | ✅ FIXED | Per-sensor calibration bias (TOML `[tracking]` azimuth/elevation/range_bias) + quality-scaled Gaussian noise at measurement creation; seeded `DetectionSystem` RNG for deterministic tests |
 | Coriolis force | Pending | Not modeled (minor effect for these ranges) |
-| WGS84 ellipsoid | Pending | Uses simplified spherical Earth (6371 km) |
+| WGS84 ellipsoid | Done | Geodesic distances/azimuths/dead reckoning (Vincenty), ellipsoidal ECEF (Bowring), EKF curvature radii; display math stays spherical |
 | Polarization effects | Pending | Uniform countermeasure attenuation |
 
 ---

@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
 use crate::simulation::config::{
@@ -560,7 +561,7 @@ impl FusedTrack {
 
     /// Estimate current flight progress (0.0-1.0) from altitude and vertical rate
     pub fn estimate_flight_progress(&self, velocity: &VelocityEstimate) -> f64 {
-        const G: f64 = 0.00981; // km/s² gravity
+        const G: f64 = crate::simulation::physics::G0; // km/s² standard gravity
 
         // Estimate apogee
         let estimated_apogee = if velocity.vertical_rate_km_s >= 0.0 {
@@ -837,7 +838,7 @@ impl MeasurementNormalizer {
                     let current_speed = velocity.ground_speed_km_s;
                     let speed_change = (implied_velocity - current_speed).abs();
                     let implied_accel_km_s2 = speed_change / dt;
-                    let implied_accel_g = implied_accel_km_s2 / 0.00981; // Convert to g's
+                    let implied_accel_g = implied_accel_km_s2 / crate::simulation::physics::G0; // Convert to g's
 
                     if implied_accel_g > self.config.max_acceleration_g {
                         result.is_valid = false;
@@ -1138,6 +1139,12 @@ pub struct DetectionSystem {
     /// Per-target altitude history (sim_time, altitude_km) for parabolic fitting.
     /// Cleared alongside converged trajectories on track reset.
     alt_histories: RefCell<HashMap<EntityId, Vec<(f64, f64)>>>,
+    /// RNG for all detection stochasticity: measurement noise, detection
+    /// probability rolls, satellite rolls, and false-alarm generation.
+    /// Owned by the DetectionSystem (the detection pipeline is
+    /// single-threaded) so `seed_rng` makes entire test scenarios
+    /// reproducible. Seeded from entropy in production.
+    rng: StdRng,
 }
 
 impl Default for DetectionSystem {
@@ -1159,6 +1166,7 @@ impl DetectionSystem {
             normalizer: MeasurementNormalizer::new(),
             converged_trajectories: RefCell::new(HashMap::new()),
             alt_histories: RefCell::new(HashMap::new()),
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -1175,6 +1183,7 @@ impl DetectionSystem {
             normalizer: MeasurementNormalizer::new(),
             converged_trajectories: RefCell::new(HashMap::new()),
             alt_histories: RefCell::new(HashMap::new()),
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -1233,40 +1242,105 @@ impl DetectionSystem {
     }
 
     /// Create a RadarMeasurement from detection data for EKF
+    /// Create a radar measurement with sensor calibration bias and
+    /// stochastic measurement noise applied.
+    ///
+    /// The measurement model is the first place real error enters this
+    /// simulation: a deterministic per-sensor calibration offset (bias)
+    /// plus zero-mean Gaussian noise scaled by detection quality. The
+    /// downstream EKF R-matrix already expects noise of this magnitude
+    /// (it is built from the same `noise_std` values), so the filter's
+    /// reported uncertainty now reflects actual measurement scatter.
+    ///
+    /// Returns (measurement, measured_bearing_deg, measured_range_km):
+    /// the perturbed bearing is shared between the EKF measurement and the
+    /// Detection (same angular quantity, one realization); the Detection
+    /// range is the caller's mode-dependent range with bias+noise
+    /// applied separately from the EKF's slant range.
+    ///
+    /// Note: `Detection.altitude_km` deliberately remains the true target
+    /// altitude — the converged-trajectory altitude fit is calibrated
+    /// against the true parabolic profile. Deriving altitude from the
+    /// noisy elevation would inject a systematic flat-earth error into
+    /// the trajectory estimator (tracked in docs/radar-detection-tracking.md).
+    #[allow(clippy::too_many_arguments)]
     fn create_radar_measurement(
         sensor_position: GeoCoord,
         sensor_altitude_km: f64,
         slant_range_km: f64,
         bearing_deg: f64,
+        detection_range_km: f64,
         target_altitude_km: f64,
         timestamp: f64,
         detection_quality: f64,
-    ) -> crate::simulation::ekf::RadarMeasurement {
-        // Calculate elevation angle from slant range and altitude difference
-        // elevation = asin(altitude_diff / slant_range)
-        // Note: We use slant_range directly here since that's what the radar measures
-        let altitude_diff = target_altitude_km - sensor_altitude_km;
-        let elevation_rad = if slant_range_km > 0.01 {
-            (altitude_diff / slant_range_km).clamp(-1.0, 1.0).asin()
-        } else {
-            0.0
-        };
-
+        tracking_config: &crate::simulation::config::SensorTrackingConfig,
+        rng: &mut StdRng,
+    ) -> (
+        crate::simulation::ekf::RadarMeasurement,
+        f64, // biased+noisy bearing (deg)
+        f64, // biased+noisy detection range (km)
+    ) {
         // Measurement noise depends on detection quality
         // Higher quality = lower noise
         let quality_factor = (1.0 - detection_quality).max(0.1);
-        let range_noise = 0.1 * quality_factor; // 0.01 - 0.1 km noise
-        let angle_noise = (0.5_f64).to_radians() * quality_factor; // 0.05 - 0.5 deg noise
+        let range_noise = 0.1 * quality_factor * tracking_config.noise_multiplier; // ~0.01-0.1 km
+        let angle_noise =
+            (0.5_f64).to_radians() * quality_factor * tracking_config.noise_multiplier; // ~0.05-0.5 deg
 
-        crate::simulation::ekf::RadarMeasurement {
-            range_km: slant_range_km,
-            azimuth_rad: bearing_deg.to_radians(),
+        // Stochastic zero-mean Gaussian noise (Box-Muller, seeded RNG for
+        // deterministic tests)
+        let (n_bearing, n_slant) = Self::gaussian_pair(rng);
+        let (n_elev, n_det_range) = Self::gaussian_pair(rng);
+
+        // One bearing realization shared by the EKF measurement and the
+        // Detection position path
+        let measured_bearing_deg =
+            bearing_deg + tracking_config.azimuth_bias_deg + n_bearing * angle_noise.to_degrees();
+        let measured_detection_range_km =
+            (detection_range_km + tracking_config.range_bias_km + n_det_range * range_noise)
+                .max(0.0);
+
+        // EKF measurement: biased+noisy slant range and elevation
+        let measured_slant_km =
+            (slant_range_km + tracking_config.range_bias_km + n_slant * range_noise).max(0.0);
+        let altitude_diff = target_altitude_km - sensor_altitude_km;
+        let elevation_rad = if measured_slant_km > 0.01 {
+            (altitude_diff / measured_slant_km).clamp(-1.0, 1.0).asin()
+        } else {
+            0.0
+        } + tracking_config.elevation_bias_deg.to_radians()
+            + n_elev * angle_noise;
+
+        let measurement = crate::simulation::ekf::RadarMeasurement {
+            range_km: measured_slant_km,
+            azimuth_rad: measured_bearing_deg.to_radians(),
             elevation_rad,
             sensor_position,
             sensor_altitude_km,
             timestamp,
             noise_std: [range_noise, angle_noise, angle_noise],
-        }
+        };
+
+        (
+            measurement,
+            measured_bearing_deg,
+            measured_detection_range_km,
+        )
+    }
+
+    /// Standard normal pair via the Box-Muller transform
+    fn gaussian_pair(rng: &mut impl rand::Rng) -> (f64, f64) {
+        // Box-Muller: u1 in (0,1] to avoid log(0)
+        let u1 = rng.gen::<f64>().max(1e-12);
+        let u2 = rng.gen::<f64>();
+        let r = (-2.0 * u1.ln()).sqrt();
+        let theta = 2.0 * std::f64::consts::PI * u2;
+        (r * theta.cos(), r * theta.sin())
+    }
+
+    /// Seed the measurement-noise RNG (deterministic tests).
+    pub fn seed_rng(&mut self, seed: u64) {
+        self.rng = StdRng::seed_from_u64(seed);
     }
 
     /// Update all detections based on current entity positions
@@ -1374,6 +1448,7 @@ impl DetectionSystem {
                                     band,
                                     current_sim_time,
                                     is_cued,
+                                    &mut self.rng,
                                 ) {
                                     // Use unique sensor ID for detection
                                     let mut detection = detection;
@@ -1408,6 +1483,7 @@ impl DetectionSystem {
                                     band,
                                     current_sim_time,
                                     is_cued,
+                                    &mut self.rng,
                                 ) {
                                     let mut detection = detection;
                                     detection.sensor_id = sensor.sensor_id;
@@ -1425,6 +1501,7 @@ impl DetectionSystem {
                             unit.position,
                             config.detection.detection_range_km,
                             BASE_FALSE_ALARM_RATE,
+                            &mut self.rng,
                         );
                         self.active_detections.extend(false_alarms);
                     }
@@ -1478,6 +1555,7 @@ impl DetectionSystem {
                                     band,
                                     current_sim_time,
                                     is_cued,
+                                    &mut self.rng,
                                 ) {
                                     self.active_detections.push(detection);
                                     self.record_detection(unit.id, missile.id);
@@ -1493,6 +1571,7 @@ impl DetectionSystem {
                                     band,
                                     current_sim_time,
                                     is_cued,
+                                    &mut self.rng,
                                 ) {
                                     self.active_detections.push(detection);
                                     self.record_detection(unit.id, missile.id);
@@ -1507,6 +1586,7 @@ impl DetectionSystem {
                             unit.position,
                             config.detection.detection_range_km,
                             BASE_FALSE_ALARM_RATE,
+                            &mut self.rng,
                         );
                         self.active_detections.extend(false_alarms);
                     }
@@ -1599,6 +1679,7 @@ impl DetectionSystem {
                             Some(radar_mode),
                             band,
                             current_sim_time,
+                            &mut self.rng,
                         ) {
                             self.active_detections.push(detection);
                             // Early warning radar detected a target - record for cueing propagation
@@ -1638,6 +1719,7 @@ impl DetectionSystem {
                             None,
                             band,
                             current_sim_time,
+                            &mut self.rng,
                         ) {
                             self.active_detections.push(detection);
                             // Early warning radar detected a target - record for cueing propagation
@@ -1653,6 +1735,7 @@ impl DetectionSystem {
                     station.position,
                     station.detection_range_km,
                     BASE_FALSE_ALARM_RATE,
+                    &mut self.rng,
                 );
                 self.active_detections.extend(false_alarms);
             }
@@ -1673,7 +1756,9 @@ impl DetectionSystem {
                     if satellite.affiliation == missile.affiliation {
                         continue;
                     }
-                    if let Some(detection) = Self::check_satellite_detection(satellite, missile) {
+                    if let Some(detection) =
+                        Self::check_satellite_detection(satellite, missile, &mut self.rng)
+                    {
                         self.active_detections.push(detection);
                     }
                 }
@@ -1715,8 +1800,8 @@ impl DetectionSystem {
         _sensor_position: GeoCoord,
         detection_range_km: f64,
         false_alarm_rate: f64, // Probability per scan (0.0 to 1.0)
+        rng: &mut StdRng,
     ) -> Vec<Detection> {
-        let mut rng = rand::thread_rng();
         let mut false_alarms = Vec::new();
 
         // Check if we generate any false alarms this scan
@@ -1769,6 +1854,7 @@ impl DetectionSystem {
         band: RadarBand,
         timestamp: f64,
         is_cued: bool, // Whether this sensor has been cued to this target
+        rng: &mut StdRng,
     ) -> Option<Detection> {
         // Determine effective mode (default to Search for mechanical radars)
         let mode = radar_mode.unwrap_or(RadarMode::Search);
@@ -1833,25 +1919,30 @@ impl DetectionSystem {
             p_detect *= jamming_factor;
         }
 
-        // Probabilistic detection roll
-        let mut rng = rand::thread_rng();
+        // Probabilistic detection roll (seeded RNG: whole detection pipeline
+        // is deterministic under seed_rng, for reproducible tests)
         if rng.gen::<f64>() > p_detect {
             return None; // Detection failed this scan
         }
 
         // Detection successful - use probability as quality indicator
-        // Create radar measurement for EKF (always use slant range)
+        // Create radar measurement with bias + noise applied; the Detection
+        // reuses the same perturbed bearing and mode-dependent range so
+        // the position-based path and the EKF path see one measurement
         let slant_range =
             calculate_slant_range(unit.position, 0.0, missile.position, missile.altitude_km);
-        let radar_measurement = Some(Self::create_radar_measurement(
+        let (radar_measurement, measured_bearing, measured_range) = Self::create_radar_measurement(
             unit.position,
             0.0, // Ground-based unit
             slant_range,
             bearing,
+            range_km, // mode-dependent (ground or slant)
             missile.altitude_km,
             timestamp,
             p_detect.max(0.1),
-        ));
+            &config.tracking,
+            rng,
+        );
 
         // Measurement quality is separate from detection probability
         // Modern phased array radars have high measurement accuracy once target is detected
@@ -1871,12 +1962,12 @@ impl DetectionSystem {
             sensor_type: SensorKind::DefenseUnitRadar,
             target_id: missile.id,
             detection_quality: measurement_quality,
-            bearing_deg: bearing,
-            range_km,
+            bearing_deg: measured_bearing,
+            range_km: measured_range,
             altitude_km: missile.altitude_km,
             is_false_alarm: false,
             radar_band: Some(band),
-            radar_measurement,
+            radar_measurement: Some(radar_measurement),
         })
     }
 
@@ -1888,6 +1979,7 @@ impl DetectionSystem {
         radar_mode: Option<RadarMode>,
         band: RadarBand,
         timestamp: f64,
+        rng: &mut StdRng,
     ) -> Option<Detection> {
         // Determine effective mode (default to Search for mechanical radars)
         let mode = radar_mode.unwrap_or(RadarMode::Search);
@@ -1949,8 +2041,7 @@ impl DetectionSystem {
             p_detect *= jamming_factor;
         }
 
-        // Probabilistic detection roll
-        let mut rng = rand::thread_rng();
+        // Probabilistic detection roll (seeded RNG, see defense-unit path)
         if rng.gen::<f64>() > p_detect {
             return None; // Detection failed this scan
         }
@@ -1964,36 +2055,45 @@ impl DetectionSystem {
         }
         .clamp(0.7, 0.95);
 
-        // Create radar measurement for EKF (always use slant range)
+        // Create radar measurement with bias + noise applied; the Detection
+        // reuses the same perturbed bearing and mode-dependent range so
+        // the position-based path and the EKF path see one measurement
         let slant_range =
             calculate_slant_range(station.position, 0.0, missile.position, missile.altitude_km);
-        let radar_measurement = Some(Self::create_radar_measurement(
+        let (radar_measurement, measured_bearing, measured_range) = Self::create_radar_measurement(
             station.position,
             0.0, // Ground-based station
             slant_range,
             bearing,
+            range_km, // mode-dependent (ground or slant)
             missile.altitude_km,
             timestamp,
             measurement_quality,
-        ));
+            &config.tracking,
+            rng,
+        );
 
         Some(Detection {
             sensor_id: station.id,
             sensor_type: SensorKind::GroundRadar,
             target_id: missile.id,
             detection_quality: measurement_quality,
-            bearing_deg: bearing,
-            range_km,
+            bearing_deg: measured_bearing,
+            range_km: measured_range,
             altitude_km: missile.altitude_km,
             is_false_alarm: false,
             radar_band: Some(band),
-            radar_measurement,
+            radar_measurement: Some(radar_measurement),
         })
     }
 
     /// Check if a satellite can detect a missile (probabilistic)
     /// Satellites use IR or radar - IR is better during boost phase
-    fn check_satellite_detection(satellite: &Satellite, missile: &Missile) -> Option<Detection> {
+    fn check_satellite_detection(
+        satellite: &Satellite,
+        missile: &Missile,
+        rng: &mut StdRng,
+    ) -> Option<Detection> {
         let ground_range = haversine_distance(satellite.position, missile.position);
         let coverage_radius = satellite.coverage_radius_km();
 
@@ -2026,8 +2126,7 @@ impl DetectionSystem {
 
         let p_detect = (base_p + phase_bonus).clamp(0.0, 1.0);
 
-        // Probabilistic detection
-        let mut rng = rand::thread_rng();
+        // Probabilistic detection (seeded RNG, see defense-unit path)
         if rng.gen::<f64>() > p_detect {
             return None;
         }
@@ -3169,16 +3268,10 @@ impl DetectionSystem {
 }
 
 /// Calculate bearing from one point to another (degrees, 0 = North)
-/// Calculate bearing from point A to point B in degrees (0 = North, 90 = East)
+/// WGS-84 geodesic azimuth (delegates to the shared Vincenty implementation
+/// in physics)
 pub fn calculate_bearing(from: GeoCoord, to: GeoCoord) -> f64 {
-    let lat1 = from.lat.to_radians();
-    let lat2 = to.lat.to_radians();
-    let delta_lon = (to.lon - from.lon).to_radians();
-
-    let y = delta_lon.sin() * lat2.cos();
-    let x = lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * delta_lon.cos();
-
-    y.atan2(x).to_degrees().rem_euclid(360.0)
+    crate::simulation::physics::bearing(from, to)
 }
 
 /// Normalize angle difference to [-pi, pi] (radians)
@@ -3202,9 +3295,11 @@ fn calculate_elevation_angle(range_km: f64, altitude_km: f64) -> f64 {
 }
 
 /// Calculate the angle above the horizon for a target
-/// Takes Earth curvature into account
+/// Takes Earth curvature into account (mean-radius sphere approximation;
+/// the WGS-84 ellipsoidal difference in horizon dip is < 0.3% and below the
+/// granularity of these visibility gates)
 fn calculate_horizon_angle(range_km: f64, altitude_km: f64) -> f64 {
-    const EARTH_RADIUS_KM: f64 = 6371.0;
+    const EARTH_RADIUS_KM: f64 = 6371.0088; // IUGG mean radius
 
     if range_km <= 0.0 {
         return 90.0;
@@ -3221,8 +3316,9 @@ fn calculate_horizon_angle(range_km: f64, altitude_km: f64) -> f64 {
 }
 
 /// Calculate line-of-sight distance considering Earth curvature
+/// (mean-radius sphere approximation, as for calculate_horizon_angle)
 pub fn line_of_sight_range(observer_altitude_km: f64, target_altitude_km: f64) -> f64 {
-    const EARTH_RADIUS_KM: f64 = 6371.0;
+    const EARTH_RADIUS_KM: f64 = 6371.0088; // IUGG mean radius
 
     // Distance to horizon for observer
     let d1 = (2.0 * EARTH_RADIUS_KM * observer_altitude_km + observer_altitude_km.powi(2)).sqrt();
@@ -3329,27 +3425,17 @@ fn calculate_detection_probability(
 }
 
 /// Calculate a position given an origin, bearing (degrees), and range (km)
+///
+/// Vincenty direct solution on the WGS-84 ellipsoid (delegates to physics).
+/// All dead reckoning — interceptor motion, terminal lead, track projection
+/// — flows through here, staying round-trip-consistent with the geodesic
+/// distance/azimuth functions.
 pub fn calculate_position_from_bearing_range(
     origin: GeoCoord,
     bearing_deg: f64,
     range_km: f64,
 ) -> GeoCoord {
-    const EARTH_RADIUS_KM: f64 = 6371.0;
-
-    let lat1 = origin.lat.to_radians();
-    let lon1 = origin.lon.to_radians();
-    let bearing = bearing_deg.to_radians();
-    let angular_distance = range_km / EARTH_RADIUS_KM;
-
-    let lat2 = (lat1.sin() * angular_distance.cos()
-        + lat1.cos() * angular_distance.sin() * bearing.cos())
-    .asin();
-
-    let lon2 = lon1
-        + (bearing.sin() * angular_distance.sin() * lat1.cos())
-            .atan2(angular_distance.cos() - lat1.sin() * lat2.sin());
-
-    GeoCoord::new(lat2.to_degrees(), lon2.to_degrees())
+    crate::simulation::physics::geodesic_direct(origin, bearing_deg, range_km)
 }
 
 // ============================================================================
@@ -3473,7 +3559,7 @@ fn fit_altitude_quadratic(history: &[(f64, f64)]) -> Option<AltitudeFit> {
 fn parabola_state_from_altitude(alt_km: f64, vz_km_s: f64) -> Option<(f64, f64)> {
     use crate::simulation::physics::{estimate_flight_time, estimate_range_from_apogee};
 
-    const G: f64 = 0.00981; // km/s² standard gravity
+    const G: f64 = crate::simulation::physics::G0; // km/s² standard gravity
     if !(0.5..=2000.0).contains(&alt_km) {
         return None;
     }
