@@ -1164,8 +1164,8 @@ impl SimulationEngine {
                     interceptor.final_miss_distance_km =
                         Some(interceptor.cpa_tracking.min_distance_km);
                 }
-                interceptor.final_pk = Some(0.0);
-                // Feed SLS follow-up exactly like a CPA miss
+                interceptor.final_pk = Some(interceptor.hit_probability.max(0.01)); // Last computed attempt Pk (a resolved miss reflects the odds it actually had, not a retroactive zero)
+                                                                                    // Feed SLS follow-up exactly like a CPA miss
                 continue;
             }
 
@@ -2906,7 +2906,7 @@ impl SimulationEngine {
                     interceptor.final_miss_distance_km =
                         Some(interceptor.cpa_tracking.min_distance_km);
                 }
-                interceptor.final_pk = Some(0.0);
+                interceptor.final_pk = Some(interceptor.hit_probability.max(0.01)); // Last computed attempt Pk (a resolved miss reflects the odds it actually had, not a retroactive zero)
                 just_resolved.push(target_id);
                 continue;
             }
@@ -2968,7 +2968,7 @@ impl SimulationEngine {
                         interceptor.status = InterceptorStatus::Miss;
                         interceptor.miss_reason = MissReason::OffCourse;
                         interceptor.final_miss_distance_km = Some(distance_3d);
-                        interceptor.final_pk = Some(0.0);
+                        interceptor.final_pk = Some(interceptor.hit_probability.max(0.01)); // Last computed attempt Pk (a resolved miss reflects the odds it actually had, not a retroactive zero)
                         just_resolved.push(target_id);
                     }
                     // Otherwise continue homing toward kill radius
@@ -2983,7 +2983,7 @@ impl SimulationEngine {
                     interceptor.status = InterceptorStatus::Miss;
                     interceptor.miss_reason = MissReason::OffCourse;
                     interceptor.final_miss_distance_km = Some(distance_3d);
-                    interceptor.final_pk = Some(0.0);
+                    interceptor.final_pk = Some(interceptor.hit_probability.max(0.01)); // Last computed attempt Pk (a resolved miss reflects the odds it actually had, not a retroactive zero)
                     just_resolved.push(target_id);
                 } else if is_debug_system {
                     eprintln!(

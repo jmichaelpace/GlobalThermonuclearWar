@@ -366,6 +366,13 @@ impl BallisticTrajectory {
         self.origin_azimuth_deg
     }
 
+    /// Peak Coriolis cross-track deflection (km) applied by this
+    /// trajectory's midcourse envelope (0 if disabled) — used by
+    /// validation tests to bound the observed deflection.
+    pub fn coriolis_peak_km(&self) -> Option<f64> {
+        Some(self.coriolis_peak_km)
+    }
+
     /// Peak Coriolis cross-track deflection (km) for a guided-compensated
     /// ballistic flight: the physical a_c = 2*Omega*v*sin(lat) acting
     /// perpendicular to the ground track, integrated over the flight and

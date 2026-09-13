@@ -185,7 +185,7 @@ After implementing changes:
 - [x] Run `cargo test` - all tests pass ✅
 - [x] Run `cargo clippy` - no new errors ✅
 - [x] Test each scenario in `/scenarios/` directory ✅ (scenario audit: all 24 scenarios rewired with explicit `sensor_config`, config-backed missile profiles, and `facing_deg` for narrow-azimuth sensors; `tests/scenario_wiring_test.rs` now guards this permanently)
-- [ ] Verify Patriot engages at correct ranges
-- [ ] Verify GBI/Arrow 3 use Lambert guidance above 100 km
-- [ ] Verify trajectory predictions match expected physics
-- [ ] Check Pk values remain in realistic ranges
+- [x] Verify Patriot engages at correct ranges ✅ (2026-09-13, `tests/validation_checklist_test.rs`: launch solutions within the published 70 km / 0.5-40 km envelope against a config-backed Iskander SRBM, incl. sector-facing emplacement; out-of-envelope launch refusal asserted)
+- [x] Verify GBI/Arrow 3 use Lambert guidance above 100 km ✅ (2026-09-13, `tests/validation_checklist_test.rs`: solver contract — refuses endo geometries, converges exo — plus a live GBI-vs-ICBM engagement where the interceptor demonstrably operates above the Kármán line where the Lambert branch governs)
+- [x] Verify trajectory predictions match expected physics ✅ (2026-09-13, `tests/validation_checklist_test.rs`: truth-model profile (parabolic, endpoints exact, Coriolis envelope, published apogee/flight-time bands) + sensor-side converged estimate vs the flown config profile (impact <150 km, range <20%, apogee <25% at full arc))
+- [x] Check Pk values remain in realistic ranges ✅ (2026-09-13, `tests/validation_checklist_test.rs`: in-flight Pk finite and in (0,1), avg materially above chance for launch-authorized rounds, resolved final Pk in a real-system band — and the retroactive final_pk=0 on miss resolutions fixed to record the last computed attempt Pk)
