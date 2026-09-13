@@ -46,6 +46,10 @@ default_decoys = 4  # MK-4A penaids with chaff
 # Maximum number of decoys that can be deployed
 max_decoys = 8
 
+# Individual decoy radar cross section (dBsm) - REPLICA-grade aid matched
+# to the RV signature: deliberately hard to discriminate
+decoy_rcs_dbsm = -4.0
+
 # Radar cross section by flight phase
 [radar_signature]
 # RCS during boost phase (dBsm) - large due to exhaust plume

@@ -10,7 +10,7 @@ use crate::simulation::config::{
 };
 use crate::simulation::kalman::BallisticState;
 use crate::simulation::{
-    bearing, haversine_distance, normalize_angle_diff, DefenseUnit, EntityId, Interceptor,
+    bearing, haversine_distance, normalize_angle_diff, Decoy, DefenseUnit, EntityId, Interceptor,
     InterceptorStatus, Missile, MissileStatus, RadarStation, Satellite, SensorConfig,
     SensorConfigRegistry, SensorType,
 };
@@ -43,6 +43,12 @@ pub struct Detection {
     pub radar_band: Option<RadarBand>,
     /// Raw radar measurement for EKF (range/azimuth/elevation)
     pub radar_measurement: Option<crate::simulation::ekf::RadarMeasurement>,
+    /// Apparent target RCS implied by the detection physics (dBsm), with
+    /// realistic amplitude-measurement scatter (~1 dB). This is the
+    /// sensor-observable signature the discrimination/classification
+    /// machinery consumes — a per-detection random draw, never the
+    /// target's truth field read directly.
+    pub apparent_rcs_dbsm: Option<f64>,
 }
 
 /// Kind of sensor that made the detection
@@ -101,6 +107,71 @@ pub struct TrackingState {
     pub ekf_velocity_initialized: bool,
     /// Measurements since last EKF reset (for grace period after reset)
     pub measurements_since_reset: u32,
+    /// RV-vs-decoy classification state, accumulated from measured RCS
+    /// signatures (sensor-derived only — never from entity truth).
+    pub classification: Classification,
+}
+
+/// Track classification: what the sensor network believes this track is.
+///
+/// Accumulated per radar measurement by comparing the track's apparent
+/// RCS signature against the expected RV midcourse band. Real
+/// discrimination is probabilistic and dwell-time-limited: a few
+/// measurements give weak evidence, many give strong. Misclassification
+/// is possible and intended (cheap decoys can look like RVs for a while).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Classification {
+    /// Posterior probability the track is a decoy (0..1)
+    pub p_decoy: f64,
+    /// Number of RCS-signature observations consumed
+    pub signature_samples: u32,
+}
+
+impl Classification {
+    /// Expected RV midcourse apparent-RCS band (dBsm). Real hostile RVs
+    /// in this sim span -15..+5 dBsm; the class includes dim penetration
+    /// RVs (e.g. -15 dBsm Iskander-class). The band accommodates all
+    /// real RVs with margin. Signatures below it are decoy-like:
+    /// chaff clouds and light replica aids run well below RV-class
+    /// signatures. The prior comes from threat characterization
+    /// (intelligence-grade, not sensor data) — real BMD discriminators
+    /// use exactly this kind of class knowledge.
+    const RV_MIN_DBSM: f64 = -18.0;
+    const RV_MAX_DBSM: f64 = 6.0;
+
+    /// Bayesian update of the decoy probability from one apparent-RCS
+    /// observation. Likelihood ratio: an RV-like signature (within the
+    /// band) is ~3x more likely from an RV than a decoy; a decoy-like
+    /// signature (below the band by more than the measurement scatter)
+    /// is ~3x more likely from a decoy. Multi-band radars could sharpen
+    /// this; single-band dwells accumulate slowly, which is realistic.
+    fn update_from_signature(&mut self, apparent_rcs_dbsm: f64) {
+        // Log-odds increment per observation (moderate evidence)
+        const LOG_ODDS_STEP: f64 = 1.1; // ln(3) ~ 3:1 likelihood ratio
+
+        let rv_likely = (Self::RV_MIN_DBSM..=Self::RV_MAX_DBSM).contains(&apparent_rcs_dbsm);
+        let increment = if rv_likely {
+            -LOG_ODDS_STEP
+        } else {
+            LOG_ODDS_STEP
+        };
+
+        // Update in log-odds space, clamp to [0.01, 0.99] posterior bounds
+        let clamped_p = self.p_decoy.clamp(0.01, 0.99);
+        let log_odds = (clamped_p / (1.0 - clamped_p)).ln() + increment;
+        self.p_decoy = (log_odds.exp() / (1.0 + log_odds.exp())).clamp(0.0, 1.0);
+        self.signature_samples += 1;
+    }
+
+    /// Decoy probability after enough signature samples to matter
+    pub fn is_likely_decoy(&self) -> bool {
+        self.signature_samples >= 3 && self.p_decoy > 0.7
+    }
+
+    /// Unresolved: not enough signature evidence either way
+    pub fn is_unresolved(&self) -> bool {
+        self.signature_samples < 3
+    }
 }
 
 /// Threshold for consecutive rejections before resetting track
@@ -525,6 +596,9 @@ pub struct FusedTrack {
     pub total_detections: u64,
     /// Number of detections rejected by measurement validation
     pub rejected_detections: u64,
+    /// RV-vs-decoy classification (quality-weighted fusion of per-sensor
+    /// posteriors from the contributing tracks)
+    pub classification: Classification,
 }
 
 impl FusedTrack {
@@ -1352,6 +1426,7 @@ impl DetectionSystem {
         radar_stations: &[RadarStation],
         satellites: &[Satellite],
         interceptors: &[Interceptor],
+        decoys: &[Decoy],
         sensor_configs: &SensorConfigRegistry,
         dt: f64,
         current_sim_time: f64,
@@ -1374,8 +1449,8 @@ impl DetectionSystem {
         // Collect track limits for each sensor
         let mut track_limits: HashMap<EntityId, u32> = HashMap::new();
 
-        // False alarm rate (probability per scan) - lower for better sensors
-        const BASE_FALSE_ALARM_RATE: f64 = 0.05;
+        // False-alarm probability is now per-sensor (config [detection]
+        // false_alarm_probability, default 0.05 = the legacy constant)
 
         // Process defense unit sensors with scan timing
         for unit in defense_units {
@@ -1494,13 +1569,19 @@ impl DetectionSystem {
                             }
                         }
 
-                        // Generate false alarms (clutter/noise)
+                        // Generate false alarms (clutter) for this sensor's
+                        // Search-band coverage sector
                         let false_alarms = Self::generate_false_alarms(
                             sensor.sensor_id,
                             SensorKind::DefenseUnitRadar,
                             unit.position,
+                            config
+                                .detection
+                                .get_effective_azimuth_coverage(RadarMode::Search),
+                            sensor.azimuth_center_deg,
                             config.detection.detection_range_km,
-                            BASE_FALSE_ALARM_RATE,
+                            config.detection.false_alarm_probability,
+                            Some(config.detection.get_band_for_mode(RadarMode::Search)),
                             &mut self.rng,
                         );
                         self.active_detections.extend(false_alarms);
@@ -1579,13 +1660,19 @@ impl DetectionSystem {
                             }
                         }
 
-                        // Generate false alarms (clutter/noise)
+                        // Generate false alarms (clutter) for the unit's
+                        // Search-band coverage sector
                         let false_alarms = Self::generate_false_alarms(
                             unit.id,
                             SensorKind::DefenseUnitRadar,
                             unit.position,
+                            config
+                                .detection
+                                .get_effective_azimuth_coverage(RadarMode::Search),
+                            0.0, // Legacy single sensor: full-circle centered north
                             config.detection.detection_range_km,
-                            BASE_FALSE_ALARM_RATE,
+                            config.detection.false_alarm_probability,
+                            Some(config.detection.get_band_for_mode(RadarMode::Search)),
                             &mut self.rng,
                         );
                         self.active_detections.extend(false_alarms);
@@ -1728,13 +1815,17 @@ impl DetectionSystem {
                     }
                 }
 
-                // Generate false alarms (clutter/noise)
+                // Generate false alarms (clutter) for the station's
+                // coverage sector facing
                 let false_alarms = Self::generate_false_alarms(
                     station.id,
                     SensorKind::GroundRadar,
                     station.position,
+                    station.azimuth_coverage_deg,
+                    station.facing_deg,
                     station.detection_range_km,
-                    BASE_FALSE_ALARM_RATE,
+                    config.detection.false_alarm_probability,
+                    Some(config.detection.get_band_for_mode(RadarMode::Search)),
                     &mut self.rng,
                 );
                 self.active_detections.extend(false_alarms);
@@ -1765,6 +1856,69 @@ impl DetectionSystem {
             }
         }
 
+        // Scan decoys: hostile decoys are radar-visible objects with their
+        // own RCS. Detection uses Search-mode parameters (decoys are never
+        // cued targets) and the same physics as missile detection.
+        // Decoys ARE eligible for track establishment — the classification
+        // problem (deciding what a track is) belongs to the tracking layer.
+        let active_decoys: Vec<&Decoy> = decoys.iter().filter(|d| d.altitude_km > 0.1).collect();
+        for unit in defense_units {
+            if unit.affiliation == crate::simulation::Affiliation::Hostile {
+                continue; // Hostile sensors don't scan their own decoys
+            }
+            if !unit.sensors.is_empty() {
+                for sensor in &unit.sensors {
+                    let config = sensor_configs.get_by_name(&sensor.config_name);
+                    if self.should_scan(sensor.sensor_id, config.tracking.track_update_rate_hz, dt)
+                    {
+                        for decoy in &active_decoys {
+                            if decoy.affiliation == unit.affiliation {
+                                continue;
+                            }
+                            if let Some(detection) = Self::check_decoy_detection(
+                                sensor.sensor_id,
+                                unit.position,
+                                decoy,
+                                config,
+                                config.detection.get_band_for_mode(RadarMode::Search),
+                                current_sim_time,
+                                &mut self.rng,
+                            ) {
+                                self.active_detections.push(detection);
+                                // Decoys do NOT record cueing (never
+                                // fire-control targets)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for station in radar_stations {
+            if station.affiliation == crate::simulation::Affiliation::Hostile {
+                continue;
+            }
+            let config = sensor_configs.get_by_name(&station.sensor_config_name);
+            if self.should_scan(station.id, config.tracking.track_update_rate_hz, dt) {
+                for decoy in &active_decoys {
+                    if decoy.affiliation == station.affiliation {
+                        continue;
+                    }
+                    if let Some(mut detection) = Self::check_decoy_detection(
+                        station.id,
+                        station.position,
+                        decoy,
+                        config,
+                        config.detection.get_band_for_mode(RadarMode::Search),
+                        current_sim_time,
+                        &mut self.rng,
+                    ) {
+                        detection.sensor_type = SensorKind::GroundRadar;
+                        self.active_detections.push(detection);
+                    }
+                }
+            }
+        }
+
         // Update tracking states with track limits
         self.update_tracks(
             &track_limits,
@@ -1774,6 +1928,92 @@ impl DetectionSystem {
             radar_stations,
             satellites,
         );
+    }
+
+    /// Check if a radar can detect a decoy (Search-mode physics, decoy RCS).
+    /// Decoys produce Detections eligible for tracking — discriminating
+    /// them from RVs is the tracking layer's classification problem, not
+    /// the detection layer's (a radar return is a radar return).
+    #[allow(clippy::too_many_arguments)]
+    fn check_decoy_detection(
+        sensor_id: EntityId,
+        sensor_position: GeoCoord,
+        decoy: &Decoy,
+        config: &SensorConfig,
+        band: RadarBand,
+        timestamp: f64,
+        rng: &mut StdRng,
+    ) -> Option<Detection> {
+        // Search-mode range (decoys are never cued/extended-range targets)
+        let effective_range = config.detection.detection_range_km;
+
+        let range_km = haversine_distance(sensor_position, decoy.position);
+        if range_km > effective_range * 1.5 {
+            return None;
+        }
+
+        let bearing = calculate_bearing(sensor_position, decoy.position);
+
+        // Elevation/horizon gates (same as missiles)
+        let horizon_angle = calculate_horizon_angle(range_km, decoy.altitude_km);
+        if horizon_angle < config.detection.elevation_min_deg.max(2.0) {
+            return None;
+        }
+
+        // Detection probability with the decoy's own RCS
+        let p_detect = calculate_detection_probability(
+            range_km,
+            effective_range,
+            decoy.rcs_dbsm,
+            config.tracking.minimum_rcs_dbsm,
+            decoy.altitude_km,
+            band.attenuation_coefficient(),
+            band.quality_multiplier(),
+            config.detection.clutter_density,
+            band,
+        );
+
+        // Probabilistic roll
+        if rng.gen::<f64>() > p_detect {
+            return None;
+        }
+
+        // Measurement with the same calibration bias + noise model as
+        // missile observations (consistent error statistics for the EKF)
+        let slant_range =
+            calculate_slant_range(sensor_position, 0.0, decoy.position, decoy.altitude_km);
+        let (radar_measurement, measured_bearing, measured_range) = Self::create_radar_measurement(
+            sensor_position,
+            0.0,
+            slant_range,
+            bearing,
+            range_km,
+            decoy.altitude_km,
+            timestamp,
+            p_detect.max(0.1),
+            &config.tracking,
+            rng,
+        );
+
+        // Apparent RCS: the signature that produced this detection, with
+        // ~1 dB amplitude-measurement scatter (realistic radar amplitude
+        // estimation error). Sensor-observable; the discriminator input.
+        let (n_rcs, _) = Self::gaussian_pair(rng);
+        let apparent_rcs_dbsm = decoy.rcs_dbsm + n_rcs * 1.0;
+
+        Some(Detection {
+            sensor_id,
+            sensor_type: SensorKind::DefenseUnitRadar,
+            target_id: decoy.id,
+            detection_quality: p_detect.clamp(0.7, 0.95),
+            bearing_deg: measured_bearing,
+            range_km: measured_range,
+            altitude_km: decoy.altitude_km,
+            is_false_alarm: false,
+            radar_band: Some(band),
+            radar_measurement: Some(radar_measurement),
+            apparent_rcs_dbsm: Some(apparent_rcs_dbsm),
+        })
     }
 
     /// Check if a sensor should perform a scan this tick
@@ -1792,33 +2032,74 @@ impl DetectionSystem {
         }
     }
 
-    /// Generate false alarm detections (clutter/noise)
-    /// Returns 0-2 false alarms based on probability
+    /// Generate false alarm detections from surface clutter
+    ///
+    /// Clutter physics (Skolnik, Radar Handbook, ch. 7):
+    /// - Count per scan is Poisson-distributed with mean = configured
+    ///   false-alarm probability scaled by the band's clutter coefficient
+    ///   (higher bands see stronger surface return). A scan can produce
+    ///   zero or more alarms, not a fixed 1-2.
+    /// - Bearing lies within the sensor's actual azimuth coverage sector
+    ///   (not the full circle).
+    /// - Range follows the surface-clutter power falloff: clutter return
+    ///   power goes as sigma0 * R^-3 for constant grazing angle, so alarms
+    ///   concentrate near the radar — sampled via inverse-CDF on the
+    ///   R^-3 density.
+    /// - Altitude is grazing-consistent: clutter comes from the surface,
+    ///   so the reported altitude implied by a low-elevation beam stays
+    ///   low (0.5-5 km), falling relative to a ballistic target's profile.
+    #[allow(clippy::too_many_arguments)]
     fn generate_false_alarms(
         sensor_id: EntityId,
         sensor_type: SensorKind,
         _sensor_position: GeoCoord,
+        azimuth_coverage_deg: f64,
+        azimuth_center_deg: f64,
         detection_range_km: f64,
-        false_alarm_rate: f64, // Probability per scan (0.0 to 1.0)
+        false_alarm_probability: f64,
+        band: Option<RadarBand>,
         rng: &mut StdRng,
     ) -> Vec<Detection> {
-        let mut false_alarms = Vec::new();
+        // Poisson mean per scan: configured probability * band clutter
+        // coefficient. X-band baseline keeps the legacy 0.05 semantics.
+        let clutter_coeff = band.map(|b| b.clutter_coefficient()).unwrap_or(1.0);
+        let mean_alarms = false_alarm_probability * clutter_coeff;
 
-        // Check if we generate any false alarms this scan
-        if rng.gen::<f64>() > false_alarm_rate {
-            return false_alarms;
+        // Sample Poisson count via Knuth's method (small means: fast)
+        let mut count = 0;
+        let l = (-mean_alarms).exp();
+        let mut p = 1.0;
+        while p > l && count < 8 {
+            p *= rng.gen::<f64>();
+            if p > l {
+                count += 1;
+            }
         }
 
-        // Generate 1-2 false alarms
-        let num_alarms = if rng.gen::<f64>() < 0.7 { 1 } else { 2 };
+        let mut false_alarms = Vec::with_capacity(count);
+        for _ in 0..count {
+            // Bearing within the sensor's actual coverage sector, centered
+            // on the sensor's azimuth center
+            let half_coverage = azimuth_coverage_deg / 2.0;
+            let offset = rng.gen_range(-half_coverage..half_coverage);
+            let bearing = (azimuth_center_deg + offset).rem_euclid(360.0);
 
-        for _ in 0..num_alarms {
-            // Random bearing and range within detection envelope
-            let bearing = rng.gen_range(0.0..360.0);
-            let range = rng.gen_range(detection_range_km * 0.3..detection_range_km * 0.9);
-            // False alarms typically appear at medium altitudes
-            let altitude = rng.gen_range(50.0..300.0);
-            // Low quality - these are noise
+            // Range from inverse-CDF of the clutter density R^-3 on
+            // [r_min, r_max]: F(R) = (R^-2 - r_min^-2)/(r_max^-2 - r_min^-2),
+            // so R = (r_min^-2 + u*(r_max^-2 - r_min^-2))^(-1/2)
+            let r_min = detection_range_km * 0.15;
+            let r_max = detection_range_km * 0.9;
+            let u = rng.gen::<f64>();
+            let inv_rmin_sq = 1.0 / (r_min * r_min);
+            let inv_rmax_sq = 1.0 / (r_max * r_max);
+            let range = 1.0 / (inv_rmin_sq + u * (inv_rmax_sq - inv_rmin_sq)).sqrt();
+
+            // Grazing-consistent altitude: clutter returns arrive near the
+            // surface; the implied altitude from a low-elevation beam stays
+            // low (0.5-5 km band)
+            let altitude = rng.gen_range(0.5..5.0);
+
+            // Clutter quality is low (noise-like returns)
             let quality = rng.gen_range(0.1..0.3);
 
             false_alarms.push(Detection {
@@ -1830,8 +2111,10 @@ impl DetectionSystem {
                 range_km: range,
                 altitude_km: altitude,
                 is_false_alarm: true,
-                radar_band: None,
+                radar_band: band,
                 radar_measurement: None,
+                // Clutter returns carry no meaningful amplitude signature
+                apparent_rcs_dbsm: None,
             });
         }
 
@@ -1910,6 +2193,8 @@ impl DetectionSystem {
             missile.altitude_km,
             band.attenuation_coefficient(),
             band.quality_multiplier(),
+            config.detection.clutter_density,
+            band,
         );
 
         // Apply EW/jamming effect from countermeasures
@@ -1957,6 +2242,11 @@ impl DetectionSystem {
         }
         .clamp(0.7, 0.95);
 
+        // Apparent RCS with ~1 dB amplitude scatter (discriminator input;
+        // see Decoy classification docs)
+        let (n_rcs, _) = Self::gaussian_pair(rng);
+        let apparent_rcs_dbsm = rcs_dbsm + n_rcs * 1.0;
+
         Some(Detection {
             sensor_id: unit.id,
             sensor_type: SensorKind::DefenseUnitRadar,
@@ -1968,6 +2258,7 @@ impl DetectionSystem {
             is_false_alarm: false,
             radar_band: Some(band),
             radar_measurement: Some(radar_measurement),
+            apparent_rcs_dbsm: Some(apparent_rcs_dbsm),
         })
     }
 
@@ -2033,6 +2324,8 @@ impl DetectionSystem {
             missile.altitude_km,
             band.attenuation_coefficient(),
             band.quality_multiplier(),
+            config.detection.clutter_density,
+            band,
         );
 
         // Apply EW/jamming effect from countermeasures
@@ -2073,6 +2366,10 @@ impl DetectionSystem {
             rng,
         );
 
+        // Apparent RCS with ~1 dB amplitude scatter (discriminator input)
+        let (n_rcs, _) = Self::gaussian_pair(rng);
+        let apparent_rcs_dbsm = rcs_dbsm + n_rcs * 1.0;
+
         Some(Detection {
             sensor_id: station.id,
             sensor_type: SensorKind::GroundRadar,
@@ -2084,6 +2381,7 @@ impl DetectionSystem {
             is_false_alarm: false,
             radar_band: Some(band),
             radar_measurement: Some(radar_measurement),
+            apparent_rcs_dbsm: Some(apparent_rcs_dbsm),
         })
     }
 
@@ -2155,6 +2453,8 @@ impl DetectionSystem {
             is_false_alarm: false,
             radar_band: None, // Satellites don't use multi-band switching
             radar_measurement: None,
+            // Satellites (IR-primary) provide no radar amplitude signature
+            apparent_rcs_dbsm: None,
         })
     }
 
@@ -2295,6 +2595,17 @@ impl DetectionSystem {
                         // Update predicted position
                         self.active_tracks[idx].predicted_position = measured_position;
                         self.active_tracks[idx].predicted_altitude = detection.altitude_km;
+
+                        // Discrimination: consume the apparent-RCS signature
+                        // (sensor-observable amplitude) into the track's
+                        // RV-vs-decoy classification. This is the per-dwell
+                        // discriminator: each accepted observation sharpens
+                        // the posterior.
+                        if let Some(apparent_rcs) = detection.apparent_rcs_dbsm {
+                            self.active_tracks[idx]
+                                .classification
+                                .update_from_signature(apparent_rcs);
+                        }
 
                         // Update filter based on filter type
                         match self.filter_type {
@@ -2443,6 +2754,7 @@ impl DetectionSystem {
                                 ekf_state,
                                 ekf_velocity_initialized: false,
                                 measurements_since_reset: 1, // First measurement counts
+                                classification: Classification::default(),
                             });
                         }
                         // If at limit, detection is dropped (sensor saturated)
@@ -2665,6 +2977,26 @@ impl DetectionSystem {
         // Get track health stats (total detections vs rejected)
         let track_health = self.normalizer.get_track_health(target_id);
 
+        // Fuse classification: quality-weighted average of per-track
+        // decoy posteriors; total sample count propagates for the
+        // unresolved/likely-decoy gates
+        let mut cls_weight_sum = 0.0;
+        let mut cls_p_sum = 0.0;
+        let mut cls_samples = 0u32;
+        for t in &tracks {
+            cls_weight_sum += t.track_quality.max(0.05);
+            cls_p_sum += t.track_quality.max(0.05) * t.classification.p_decoy;
+            cls_samples += t.classification.signature_samples;
+        }
+        let fused_classification = if cls_weight_sum > 0.0 {
+            Classification {
+                p_decoy: (cls_p_sum / cls_weight_sum).clamp(0.0, 1.0),
+                signature_samples: cls_samples,
+            }
+        } else {
+            Classification::default()
+        };
+
         let mut fused_track = FusedTrack {
             target_id,
             estimated_position: GeoCoord::new(lat_sum, lon_sum),
@@ -2688,6 +3020,7 @@ impl DetectionSystem {
                 .cloned(),
             total_detections: track_health.measurement_count + track_health.rejection_count,
             rejected_detections: track_health.rejection_count,
+            classification: fused_classification,
         };
 
         // Refine converged trajectory ONLY when new measurements have arrived
@@ -3375,6 +3708,17 @@ pub fn calculate_slant_range(
 
 /// Calculate detection probability based on radar equation factors
 /// Returns probability 0.0 to 1.0
+///
+/// Range dependence is the true radar-equation R^4 law: received power
+/// falls off as 1/R^4, so the single-pulse SNR at range R is
+/// SNR(R) = SNR_ref * (R_ref/R)^4. The curve is calibrated so Pd = 0.5 at
+/// the nominal max range (preserving the legacy convention) by mapping the
+/// SNR ratio through a smooth detection curve:
+///   Pd = L(SNR) / (L(SNR) + SNR_ref)   with L(x) = x^2 (logistic in SNR^2)
+/// which yields Pd=0.5 exactly at R = R_ref and falls with the correct R^4
+/// steepness. Clutter degrades effective SNR multiplicatively
+/// (band clutter coefficient x sensor clutter density, Skolnik ch. 7).
+#[allow(clippy::too_many_arguments)]
 fn calculate_detection_probability(
     range_km: f64,
     max_range_km: f64,
@@ -3383,25 +3727,25 @@ fn calculate_detection_probability(
     altitude_km: f64,
     attenuation_coeff: f64,
     quality_multiplier: f64,
+    clutter_density: f64,
+    band: RadarBand,
 ) -> f64 {
     // Early exit if way out of range
     if range_km > max_range_km * 1.5 {
         return 0.0;
     }
 
-    // 1. Range factor: P decreases with R^4 (radar equation)
-    // At nominal max_range, detection probability should be ~50%
-    // Quality degrades smoothly from 100% at close range to 50% at max range
-    let range_ratio = range_km / max_range_km;
-    let range_factor = if range_ratio <= 1.0 {
-        // Smooth degradation: 100% at 0 range, 50% at max_range
-        // Using inverse power law: quality = 1 / (1 + range_ratio^2)
-        1.0 / (1.0 + range_ratio.powi(2))
-    } else {
-        // Beyond max range: exponential falloff
-        let excess_ratio = range_ratio - 1.0;
-        0.5 * (-3.0 * excess_ratio).exp()
-    };
+    // 1. Range factor: radar equation R^4 law, expressed as a logistic
+    // detection curve in SNR. Single-pulse SNR falls as 1/R^4 (received
+    // power against a point target); mapping SNR through Pd = SNR/(SNR+1)
+    // with the SNR=1 point defined at the nominal max range gives
+    //   Pd(R) = 1 / (1 + (R/R_ref)^4)
+    // which is exactly 0.5 at nominal and steepens realistically (the
+    // legacy 1/(1+R^2) inverse-square shape was too gradual within range;
+    // a true Swerling-0 Pd(SNR) curve is even steeper — this is the middle
+    // ground that keeps the config-calibrated engagement envelopes valid).
+    let range_ratio = (range_km / max_range_km).clamp(1e-6, 1.5);
+    let range_factor = 1.0 / (1.0 + range_ratio.powi(4));
 
     // 2. RCS factor: Higher RCS = easier detection
     // Each 10 dB increase in RCS roughly doubles detection range
@@ -3411,7 +3755,8 @@ fn calculate_detection_probability(
         1.0
     } else {
         // Target below minimum RCS - probability reduced
-        // Each -10 dB halves probability
+        // Each -20 dB cuts SNR by 10x (linear power); Pd follows the
+        // same SNR curve, approximated here by the direct power ratio
         10.0_f64.powf(rcs_advantage_db / 20.0).clamp(0.0, 1.0)
     };
 
@@ -3420,8 +3765,23 @@ fn calculate_detection_probability(
         calculate_atmospheric_attenuation(range_km, altitude_km, attenuation_coeff);
 
     // 4. Radar band quality multiplier (higher frequency = better resolution/quality)
+
+    // 5. Clutter degradation: surface clutter raises the effective noise
+    // floor, reducing detection probability for low-altitude targets
+    // most (the radar sees them against terrain/sea return). Ballistic
+    // targets above the clutter boundary (beam above horizon) are immune.
+    let clutter_coeff = band.clutter_coefficient() * clutter_density;
+    let clutter_factor = if altitude_km < 20.0 && clutter_coeff > 0.0 {
+        // Below ~20 km the target is inside the clutter-laden region
+        // (Skolnik: land/sea clutter extends to the radar horizon)
+        (1.0 / (1.0 + 0.25 * (clutter_coeff - 1.0))).clamp(0.5, 1.0)
+    } else {
+        1.0
+    };
+
     // Combined probability (independent factors multiply)
-    (range_factor * rcs_factor * attenuation_factor * quality_multiplier).clamp(0.0, 1.0)
+    (range_factor * rcs_factor * attenuation_factor * quality_multiplier * clutter_factor)
+        .clamp(0.0, 1.0)
 }
 
 /// Calculate a position given an origin, bearing (degrees), and range (km)
@@ -3590,4 +3950,203 @@ fn parabola_state_from_altitude(alt_km: f64, vz_km_s: f64) -> Option<(f64, f64)>
     }
 
     Some((apogee, progress))
+}
+
+#[cfg(test)]
+mod clutter_tests {
+    use super::*;
+
+    #[test]
+    fn test_pd_half_at_nominal_range() {
+        // Pd = 0.5 at the nominal max range (legacy calibration preserved)
+        let pd = calculate_detection_probability(
+            500.0,
+            500.0,
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            1.0,
+            1.0,
+            RadarBand::X,
+        );
+        assert!((pd - 0.5).abs() < 1e-9, "Pd at nominal: {pd}");
+    }
+
+    #[test]
+    fn test_pd_monotone_decreasing_with_range() {
+        let mut prev = 2.0;
+        for range in [100.0, 200.0, 350.0, 500.0, 650.0, 740.0] {
+            let pd = calculate_detection_probability(
+                range,
+                500.0,
+                0.0,
+                0.0,
+                100.0,
+                0.0,
+                1.0,
+                1.0,
+                RadarBand::X,
+            );
+            assert!(pd <= prev + 1e-12, "Pd not monotone at {range} km");
+            prev = pd;
+        }
+        // Close range: near-certain detection
+        let pd_close = calculate_detection_probability(
+            100.0,
+            500.0,
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            1.0,
+            1.0,
+            RadarBand::X,
+        );
+        assert!(pd_close > 0.99);
+        // 1.48x nominal: R^4 logistic leaves modest detection (a marginal
+        // target in the probabilistic margin the 1.5x early exit allows)
+        let pd_far = calculate_detection_probability(
+            740.0,
+            500.0,
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            1.0,
+            1.0,
+            RadarBand::X,
+        );
+        assert!(pd_far < 0.25, "R^4 falloff too shallow: {pd_far}");
+    }
+
+    #[test]
+    fn test_clutter_degrades_low_altitude_pd() {
+        let pd_clean = calculate_detection_probability(
+            300.0,
+            500.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            1.0,
+            1.0,
+            RadarBand::X,
+        );
+        let pd_cluttered = calculate_detection_probability(
+            300.0,
+            500.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            1.0,
+            3.0,
+            RadarBand::X,
+        );
+        assert!(
+            pd_cluttered < pd_clean,
+            "clutter should reduce low-altitude Pd: {pd_cluttered} vs {pd_clean}"
+        );
+        // Above the clutter boundary (20 km): clutter has no effect
+        let pd_high_clean = calculate_detection_probability(
+            300.0,
+            500.0,
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            1.0,
+            1.0,
+            RadarBand::X,
+        );
+        let pd_high_clutter = calculate_detection_probability(
+            300.0,
+            500.0,
+            0.0,
+            0.0,
+            100.0,
+            0.0,
+            1.0,
+            3.0,
+            RadarBand::X,
+        );
+        assert!((pd_high_clean - pd_high_clutter).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_false_alarm_count_and_geometry() {
+        // Seeded RNG: with a large mean, we get multiple alarms; with a
+        // zero mean, we get none.
+        let mut rng = StdRng::seed_from_u64(99);
+        let alarms = DetectionSystem::generate_false_alarms(
+            1,
+            SensorKind::GroundRadar,
+            GeoCoord::new(37.0, 132.0),
+            90.0, // narrow sector
+            45.0, // facing NE
+            600.0,
+            0.8, // high probability -> several alarms
+            Some(RadarBand::X),
+            &mut rng,
+        );
+        assert!(!alarms.is_empty(), "high Pfa should produce alarms");
+        for a in &alarms {
+            assert!(a.is_false_alarm);
+            assert_eq!(a.target_id, u64::MAX);
+            // Bearing within +/- 45 deg of the facing (45 deg)
+            let rel = normalize_angle_diff(a.bearing_deg - 45.0);
+            assert!(
+                rel.abs() <= 45.0 + 1e-9,
+                "bearing {} outside sector",
+                a.bearing_deg
+            );
+            // Range within the clutter band
+            assert!(a.range_km >= 600.0 * 0.15 && a.range_km <= 600.0 * 0.9);
+            // Low grazing altitude
+            assert!(a.altitude_km >= 0.5 && a.altitude_km <= 5.0);
+        }
+
+        // Zero probability: never any alarms
+        let mut rng = StdRng::seed_from_u64(99);
+        let alarms = DetectionSystem::generate_false_alarms(
+            1,
+            SensorKind::GroundRadar,
+            GeoCoord::new(37.0, 132.0),
+            360.0,
+            0.0,
+            600.0,
+            0.0,
+            Some(RadarBand::X),
+            &mut rng,
+        );
+        assert!(alarms.is_empty());
+    }
+
+    #[test]
+    fn test_poisson_mean_matches_band_coefficient() {
+        // Statistically: 200 seeded scans with mean 0.05*coeff should
+        // average near that count-mean. Loose bounds (Poisson variance).
+        let mut total = 0usize;
+        for seed in 0..200u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let alarms = DetectionSystem::generate_false_alarms(
+                1,
+                SensorKind::GroundRadar,
+                GeoCoord::new(0.0, 0.0),
+                360.0,
+                0.0,
+                500.0,
+                0.05,
+                Some(RadarBand::X), // coeff 1.0 -> mean 0.05
+                &mut rng,
+            );
+            total += alarms.len();
+        }
+        // Expect ~10 alarms out of 200 scans; allow 3..30
+        assert!(
+            total >= 3 && total <= 30,
+            "Poisson mean off: {total} alarms in 200 scans (expect ~10)"
+        );
+    }
 }

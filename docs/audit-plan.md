@@ -72,10 +72,10 @@ This document captures the audit of the simulation codebase against the domain r
 | Gap | Status | Notes |
 |-----|--------|-------|
 | ~~RCS aspect-angle variation~~ | ✅ FIXED | Now varies ±1.5dB based on nose/broadside/tail aspect |
-| Radar clutter modeling | Pending | False alarms exist but not from clutter physics |
+| ~~Radar clutter modeling~~ | ✅ FIXED | Poisson false-alarm counts (band clutter coefficient), coverage-sector bearings, R^-3 clutter falloff range, grazing-consistent altitude; per-sensor false_alarm_probability + clutter_density in TOML; true R^4 detection curve (Pd=0.5 at nominal) with low-altitude clutter degradation |
 | ~~Measurement error model~~ | ✅ FIXED | Per-sensor calibration bias (TOML `[tracking]` azimuth/elevation/range_bias) + quality-scaled Gaussian noise at measurement creation; seeded `DetectionSystem` RNG for deterministic tests |
-| Coriolis force | Pending | Not modeled (minor effect for these ranges) |
-| WGS84 ellipsoid | Done | Geodesic distances/azimuths/dead reckoning (Vincenty), ellipsoidal ECEF (Bowring), EKF curvature radii; display math stays spherical |
+| ~~Coriolis force~~ | ✅ FIXED | Guided-compensated cross-track deflection on the truth model (sin envelope, zero at endpoints, midcourse peak from 2Ω·v·sin(lat)); config `[physics] coriolis_residual_fraction` (0.15); sensor-derived trajectory reconstructions zero it (measured paths already contain the real deflection) |
+| ~~RV discrimination~~ | ✅ FIXED | Decoy entities (own RCS, drift, altitude deficit) detected by all radar types; per-track Bayesian classification from apparent-RCS signatures (±1 dB scatter); doctrine: likely-decoy tracks never engaged, unresolved engage only when terminal or ammo-plentiful; Pk discrimination factor; SLS skips decoy-classified tracks |
 | Polarization effects | Pending | Uniform countermeasure attenuation |
 
 ---

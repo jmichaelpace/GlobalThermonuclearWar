@@ -72,3 +72,26 @@ and Applications") for exo-atmospheric intercepts above 100 km. Known
 limitation: the solver treats ECEF as inertial (no Earth rotation); the
 effect is small for interceptor flight times (30–170 s) but is tracked in
 audit-plan.md for a future ECI+GMST pass.
+### Coriolis Deflection
+
+Guided-compensated model: missiles pre-compensate Earth rotation, so launch
+and impact stay on the scenario geodesic, but the midcourse profile is
+canted by the residual Coriolis acceleration a = 2·Ω·v·sin(φ)
+(Ω = 7.2921159e-5 rad/s, WGS-84 value). The cross-track offset follows a
+sin(π·progress) envelope — zero at endpoints, peak midcourse:
+
+d_peak ≈ 2·Ω·sin(lat)·range·T·residual / π²
+
+with `residual = [physics] coriolis_residual_fraction` (default 0.15).
+MRBM: a few km peak; ICBM: tens of km — visible to sensors, harmless to
+scenario semantics.
+
+Sensor-derived trajectory reconstructions (converged-trajectory fits,
+`from_sensor_track`) deliberately zero the analytic model: the measured
+paths already contain the real deflection, and double-counting would bias
+the estimators.
+
+**Known limitation** (tracked in audit-plan.md): the Lambert solver still
+treats ECEF as inertial (no GMST rotation). Effect is small for
+interceptor flight times (30-170 s) but a future ECI-frame pass would
+close the gap.

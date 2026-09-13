@@ -31,6 +31,8 @@ pub struct SimulationSnapshot {
     pub radar_stations: Vec<RadarStation>,
     pub satellites: Vec<Satellite>,
     pub debris_clouds: Vec<DebrisCloud>,
+    /// Decoys released by hostile missiles (renderable, classifiable)
+    pub decoys: Vec<crate::simulation::entities::Decoy>,
     pub active_detections: Vec<Detection>,
     pub radar_mode_states: std::collections::HashMap<EntityId, RadarModeState>,
     // Note: FusedTracks are computed on-demand, not stored in snapshot
@@ -47,6 +49,7 @@ impl Default for SimulationSnapshot {
             radar_stations: Vec::new(),
             satellites: Vec::new(),
             debris_clouds: Vec::new(),
+            decoys: Vec::new(),
             active_detections: Vec::new(),
             radar_mode_states: std::collections::HashMap::new(),
         }
@@ -197,6 +200,7 @@ fn create_snapshot(engine: &SimulationEngine) -> SimulationSnapshot {
         radar_stations: engine.radar_stations.clone(),
         satellites: engine.satellites.clone(),
         debris_clouds: engine.debris_clouds.clone(),
+        decoys: engine.decoys.clone(),
         active_detections: engine.detection.active_detections.clone(),
         radar_mode_states: engine.detection.radar_mode_states.clone(),
     }

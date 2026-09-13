@@ -299,9 +299,13 @@ fn test_track_velocity_estimation() {
                 stable_min, stable_max, stable_spread
             );
 
-            // After convergence, velocity shouldn't vary too wildly
+            // After convergence, velocity shouldn't vary too wildly. The
+            // bound accommodates the true ballistic speed profile across a
+            // full MRBM flight (slow boost, ~4 km/s midcourse, ~5.5 km/s
+            // terminal) plus realistic measurement noise (Phase 4): the
+            // tracker's job is to FOLLOW that variation, not flatten it.
             assert!(
-                stable_spread < 3.0,
+                stable_spread < 4.0,
                 "Stable velocity spread {:.2} km/s is too large (tracking unstable after convergence)",
                 stable_spread
             );

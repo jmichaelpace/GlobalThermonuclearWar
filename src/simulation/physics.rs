@@ -330,9 +330,94 @@ pub struct BallisticTrajectory {
     /// position_at() runs per physics sub-step (up to 100/frame), so the
     /// Vincenty inverse is solved once here instead of per lookup.
     origin_azimuth_deg: f64,
+    /// Peak Coriolis cross-track deflection (km). Guided missiles
+    /// pre-compensate Coriolis (so launch/impact stay on the scenario
+    /// great path) but the airframe flies a slightly canted profile
+    /// mid-flight; the residual fraction of the physical deflection is
+    /// what sensors actually see. Zero when the config disables the model.
+    coriolis_peak_km: f64,
+    /// Lateral direction of the Coriolis deflection: +1 = right of the
+    /// direction of motion (Northern Hemisphere eastward flights), -1 = left.
+    coriolis_side: f64,
 }
 
+/// Earth's angular rotation rate (WGS-84 value, rad/s)
+pub const EARTH_OMEGA: f64 = 7.2921159e-5;
+
+/// Default fraction of the physical Coriolis deflection that remains
+/// uncompensated mid-flight (guidance cancels launch/impact error, but
+/// the canted flight profile shows the lateral offset to sensors).
+pub const CORIOLIS_RESIDUAL_FRACTION: f64 = 0.15;
+
 impl BallisticTrajectory {
+    /// Scale the Coriolis deflection by a config-provided residual fraction
+    /// (relative to the built-in default). Call after construction with the
+    /// engine's `[physics] coriolis_residual_fraction` value; 0.0 disables.
+    pub fn with_coriolis_residual(mut self, fraction: f64) -> Self {
+        let scale = (fraction / CORIOLIS_RESIDUAL_FRACTION).max(0.0);
+        self.coriolis_peak_km *= scale;
+        self
+    }
+
+    /// Cached geodesic azimuth from origin (used for decoy deployment
+    /// spread geometry — decoys release with lateral impulses relative
+    /// to the flight azimuth)
+    pub fn origin_azimuth_for_decoys(&self) -> f64 {
+        self.origin_azimuth_deg
+    }
+
+    /// Peak Coriolis cross-track deflection (km) for a guided-compensated
+    /// ballistic flight: the physical a_c = 2*Omega*v*sin(lat) acting
+    /// perpendicular to the ground track, integrated over the flight and
+    /// reduced by the residual fraction (guidance pre-compensates so the
+    /// endpoints stay on the great path; the midcourse canted profile is
+    /// what remains). Direction: right of motion in the Northern
+    /// Hemisphere for the eastward component, left in the Southern.
+    ///
+    /// For the parabolic speed profile v(t) = vmax*sqrt(1-(2t-1)^2)-ish we
+    /// use the mean ground speed range/T over the sin(pi t) lateral-
+    /// velocity envelope: d_peak ~= Omega*sin(lat)*range*T*residual/pi.
+    fn coriolis_deflection(
+        origin: GeoCoord,
+        range_km: f64,
+        flight_time_sec: f64,
+        azimuth_deg: f64,
+    ) -> (f64, f64) {
+        // Effective latitude for the sin(lat) factor: the Coriolis
+        // parameter at the flight's mean latitude
+        let mean_lat = origin.lat.to_radians();
+
+        // Horizontal Coriolis acceleration for a body moving with azimuth
+        // alpha: a_perp = 2*Omega*v*sin(lat) (to the right of motion in
+        // the Northern Hemisphere). The eastward component of motion also
+        // feels the vertical term; for deflection magnitude we keep the
+        // dominant horizontal term.
+        // Full-flight lateral displacement for constant speed v over time
+        // T, with guidance holding the endpoints: the lateral velocity
+        // follows a half-sine, giving d = a_perp*T^2/(pi^2) for constant
+        // v. With v = range/T:
+        //   d = 2*Omega*sin(lat)*(range/T)*T^2/pi^2 * residual
+        //     = 2*Omega*sin(lat)*range*T*residual/pi^2
+        let accel_scale = 2.0 * EARTH_OMEGA * mean_lat.sin() * range_km * flight_time_sec;
+        let peak = accel_scale * CORIOLIS_RESIDUAL_FRACTION
+            / (std::f64::consts::PI * std::f64::consts::PI);
+
+        // Side: right of motion for eastward component in N hemisphere;
+        // mirror for southward/equatorial crossings via sin(lat) sign,
+        // which the formula above already carries. The azimuthal
+        // dependence: motion due east (90 deg) deflects south in the
+        // N hemisphere (right of east is south)... conventionally
+        // deflection is right of velocity for Omega x v. Encode side
+        // sign from sin(lat) and the direction of travel:
+        let side = if mean_lat.sin() >= 0.0 { 1.0 } else { -1.0 };
+        // Westward travel reverses the deflection side relative to the
+        // path (the cross product flips with velocity direction)
+        let westward = !(azimuth_deg >= 0.0 && azimuth_deg <= 180.0);
+        let side = if westward { -side } else { side };
+
+        (peak.abs(), side)
+    }
+
     /// Create a new ballistic trajectory with auto-calculated parameters
     /// `range_km` is auto-calculated, `max_altitude_km` is estimated based on range
     pub fn new(origin: GeoCoord, target: GeoCoord) -> Self {
@@ -348,6 +433,9 @@ impl BallisticTrajectory {
         // ICBMs typically take 25-35 minutes for intercontinental range
         let flight_time_sec = estimate_flight_time(range_km);
 
+        let (coriolis_peak_km, coriolis_side) =
+            Self::coriolis_deflection(origin, range_km, flight_time_sec, inv.initial_bearing_deg);
+
         Self {
             origin,
             target,
@@ -359,6 +447,8 @@ impl BallisticTrajectory {
             apogee_uncertainty_km: None,
             is_sensor_derived: false,
             origin_azimuth_deg: inv.initial_bearing_deg,
+            coriolis_peak_km,
+            coriolis_side,
         }
     }
 
@@ -371,6 +461,13 @@ impl BallisticTrajectory {
     ) -> Self {
         let inv = geodesic_inverse(origin, target);
 
+        let (coriolis_peak_km, coriolis_side) = Self::coriolis_deflection(
+            origin,
+            inv.distance_km,
+            flight_time_sec,
+            inv.initial_bearing_deg,
+        );
+
         Self {
             origin,
             target,
@@ -382,6 +479,8 @@ impl BallisticTrajectory {
             apogee_uncertainty_km: None,
             is_sensor_derived: false,
             origin_azimuth_deg: inv.initial_bearing_deg,
+            coriolis_peak_km,
+            coriolis_side,
         }
     }
 
@@ -397,6 +496,19 @@ impl BallisticTrajectory {
             self.target
         } else {
             geodesic_direct(self.origin, self.origin_azimuth_deg, self.range_km * t)
+        };
+
+        // Coriolis cross-track deflection: zero at the endpoints (guided
+        // compensation pins launch and impact), sin envelope through the
+        // midcourse peak. Applied perpendicular to the cached geodesic.
+        let ground_pos = if self.coriolis_peak_km > 1e-6 && t > 0.0 && t < 1.0 {
+            let lateral =
+                self.coriolis_peak_km * (std::f64::consts::PI * t).sin() * self.coriolis_side;
+            let perp_bearing =
+                (self.origin_azimuth_deg + 90.0 * self.coriolis_side).rem_euclid(360.0);
+            geodesic_direct(ground_pos, perp_bearing, lateral.abs())
+        } else {
+            ground_pos
         };
 
         // Altitude follows a parabolic profile
@@ -487,6 +599,12 @@ impl BallisticTrajectory {
             apogee_uncertainty_km: Some(apogee_uncertainty),
             is_sensor_derived: true,
             origin_azimuth_deg: heading,
+            // Sensor-derived trajectories are reconstructions from
+            // measurements of a (deflected) real flight; adding the
+            // analytic Coriolis model on top would double-count it. The
+            // measured heading already contains the deflection.
+            coriolis_peak_km: 0.0,
+            coriolis_side: 1.0,
         })
     }
 
@@ -1561,5 +1679,72 @@ mod tests {
     fn test_g0_matches_spec() {
         assert!((G0 - 0.00980665).abs() < 1e-12);
         assert!((MEAN_EARTH_RADIUS_KM - 6371.0088).abs() < 0.01);
+    }
+
+    /// Coriolis (guided-compensated): endpoints exact, midcourse deflected.
+    /// MRBM NK->Japan: peak deflection should be a few km at 0.15 residual.
+    #[test]
+    fn test_coriolis_endpoints_and_midcourse() {
+        let traj = BallisticTrajectory::new(GeoCoord::new(39.0, 125.5), GeoCoord::new(35.0, 139.0));
+
+        // Endpoints exact (guidance compensation guarantee)
+        let (start, _) = traj.position_at(0.0);
+        assert!((start.lat - 39.0).abs() < 1e-9 && (start.lon - 125.5).abs() < 1e-9);
+        let (end, _) = traj.position_at(1.0);
+        assert!((end.lat - 35.0).abs() < 1e-9 && (end.lon - 139.0).abs() < 1e-9);
+
+        // Midcourse: off the great path by roughly the peak (sin envelope
+        // peaks exactly at t=0.5)
+        let (mid, _) = traj.position_at(0.5);
+        let undeflected_mid =
+            geodesic_direct(traj.origin, traj.origin_azimuth_deg, traj.range_km * 0.5);
+        let lateral = geodesic_inverse(mid, undeflected_mid).distance_km;
+
+        // Peak magnitude in a physically plausible band: the analytic peak
+        // for this geometry is ~1-4 km at 0.15 residual
+        assert!(
+            lateral > 0.3,
+            "midcourse deflection {lateral:.3} km unexpectedly small"
+        );
+        assert!(
+            lateral <= traj.coriolis_peak_km * 1.05,
+            "midcourse deflection {lateral:.3} km exceeds peak {}",
+            traj.coriolis_peak_km
+        );
+        assert!(
+            traj.coriolis_peak_km < 10.0,
+            "MRBM peak {} km too large",
+            traj.coriolis_peak_km
+        );
+
+        // ICBM-range flight: deflection grows with range*time
+        let icbm = BallisticTrajectory::new(GeoCoord::new(55.0, 60.0), GeoCoord::new(40.0, -100.0));
+        assert!(
+            icbm.coriolis_peak_km > traj.coriolis_peak_km,
+            "ICBM deflection {} should exceed MRBM {}",
+            icbm.coriolis_peak_km,
+            traj.coriolis_peak_km
+        );
+    }
+
+    /// Coriolis residual 0.0 disables the deflection entirely.
+    #[test]
+    fn test_coriolis_residual_zero_disables() {
+        let traj = BallisticTrajectory::with_params(
+            GeoCoord::new(39.0, 125.5),
+            GeoCoord::new(35.0, 139.0),
+            500.0,
+            600.0,
+        )
+        .with_coriolis_residual(0.0);
+
+        let (mid, _) = traj.position_at(0.5);
+        let undeflected_mid =
+            geodesic_direct(traj.origin, traj.origin_azimuth_deg, traj.range_km * 0.5);
+        let lateral = geodesic_inverse(mid, undeflected_mid).distance_km;
+        assert!(
+            lateral < 1e-6,
+            "residual 0 must disable deflection, got {lateral}"
+        );
     }
 }

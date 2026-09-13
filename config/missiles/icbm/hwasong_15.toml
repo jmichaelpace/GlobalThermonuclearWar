@@ -48,6 +48,10 @@ default_decoys = 2
 # Maximum number of decoys that can be deployed
 max_decoys = 6
 
+# Individual decoy radar cross section (dBsm) - light replica/chaff aids,
+# well below the RV-class midcourse signature (discriminable)
+decoy_rcs_dbsm = -20.0
+
 # Radar cross section by flight phase
 [radar_signature]
 # RCS during boost phase (dBsm) - very large due to exhaust plume

@@ -45,3 +45,7 @@ has_countermeasures = true
 default_decoys = 1
 # Maximum number of decoys that can be deployed
 max_decoys = 3
+
+# Individual decoy radar cross section (dBsm) - light replica/chaff aids,
+# well below the RV-class midcourse signature (discriminable)
+decoy_rcs_dbsm = -23.0

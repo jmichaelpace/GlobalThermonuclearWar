@@ -136,6 +136,12 @@ pub struct PkWeights {
     /// Countermeasures - decoys and jamming that confuse the seeker
     pub countermeasures: f64,
 
+    /// Discrimination confidence - how sure the sensor network is that
+    /// this track is the real RV (vs a decoy). Engaging with an
+    /// unresolved signature risks wasting a round on a decoy.
+    #[serde(default = "default_discrimination_weight")]
+    pub discrimination: f64,
+
     /// Closure speed - combined approach velocity affects seeker acquisition time
     pub closure_speed: f64,
 
@@ -152,6 +158,11 @@ pub struct PkWeights {
     pub severity_scale: f64,
 }
 
+/// Default weight for the discrimination Pk factor
+fn default_discrimination_weight() -> f64 {
+    1.0
+}
+
 impl Default for PkWeights {
     fn default() -> Self {
         Self {
@@ -162,6 +173,7 @@ impl Default for PkWeights {
 
             // Moderate factors
             countermeasures: 1.0,
+            discrimination: 1.0,
             closure_speed: 1.0,
             aspect_angle: 0.8,
 
@@ -223,6 +235,16 @@ pub struct PhysicsConfig {
     /// Distance threshold (km) for using full sub-steps
     /// When interceptor is within this distance of target, use full sub_steps
     pub precision_distance_km: f64,
+    /// Fraction of the physical Coriolis cross-track deflection that
+    /// remains visible mid-flight (guided missiles pre-compensate so
+    /// launch/impact stay on the scenario path; the canted profile is
+    /// what sensors see). 0.0 disables the model. Default 0.15.
+    #[serde(default = "default_coriolis_residual")]
+    pub coriolis_residual_fraction: f64,
+}
+
+fn default_coriolis_residual() -> f64 {
+    crate::simulation::physics::CORIOLIS_RESIDUAL_FRACTION
 }
 
 impl Default for PhysicsConfig {
@@ -231,6 +253,7 @@ impl Default for PhysicsConfig {
             sub_steps: 100,              // 100 sub-steps = ~0.16ms precision at 60fps
             min_sub_steps: 1,            // Normal precision when not needed
             precision_distance_km: 50.0, // Use full precision within 50km of target
+            coriolis_residual_fraction: crate::simulation::physics::CORIOLIS_RESIDUAL_FRACTION,
         }
     }
 }
@@ -311,6 +334,23 @@ impl RadarBand {
             RadarBand::C => 0.96,  // Better resolution
             RadarBand::X => 1.00,  // Excellent resolution (baseline)
             RadarBand::Ku => 1.05, // Outstanding resolution
+        }
+    }
+
+    /// Relative surface-clutter reflectivity coefficient for the band
+    /// (normalized to X-band = 1.0). Surface clutter sigma-0 rises with
+    /// frequency at low grazing angles (Skolnik, Radar Handbook, ch. 7
+    /// "Sea clutter / land clutter" frequency dependence): higher bands
+    /// see stronger ground returns, though their narrower beams compensate
+    /// partly. These coefficients drive both false-alarm rates and
+    /// detection-probability degradation in clutter.
+    pub fn clutter_coefficient(&self) -> f64 {
+        match self {
+            RadarBand::L => 0.5,  // Low frequency: weak surface return
+            RadarBand::S => 0.7,  // Moderate
+            RadarBand::C => 0.85, // Moderate-high
+            RadarBand::X => 1.0,  // Baseline
+            RadarBand::Ku => 1.3, // Strong surface return
         }
     }
 }
@@ -454,10 +494,29 @@ pub struct SensorDetectionConfig {
     /// FireControl mode azimuth coverage multiplier (multiplier on base azimuth_coverage_deg)
     #[serde(default = "default_fc_azimuth_multiplier")]
     pub fire_control_azimuth_multiplier: f64,
+    /// Probability of at least one clutter false alarm per scan
+    /// (0.05 = legacy default). Higher for radars looking at clutter-heavy
+    /// terrain, lower for clean early-warning sites.
+    #[serde(default = "default_false_alarm_probability")]
+    pub false_alarm_probability: f64,
+    /// Clutter density multiplier for detection-probability degradation
+    /// (1.0 = nominal for the band). Surface-clutter reflectivity rises
+    /// with grazing angle and frequency (Skolnik ch. 7); terminal radars
+    /// looking at terrain get > 1.0, high-altitude surveillance < 1.0.
+    #[serde(default = "default_clutter_density")]
+    pub clutter_density: f64,
 }
 
 fn default_track_multiplier() -> f64 {
     2.0 // Default 2× base range in Track mode
+}
+
+fn default_false_alarm_probability() -> f64 {
+    0.05 // Legacy BASE_FALSE_ALARM_RATE value
+}
+
+fn default_clutter_density() -> f64 {
+    1.0 // Nominal clutter for the band
 }
 
 fn default_fc_multiplier() -> f64 {
@@ -686,6 +745,8 @@ impl SensorConfigRegistry {
                 fire_control_range_multiplier: 3.0,
                 track_azimuth_multiplier: 1.0,
                 fire_control_azimuth_multiplier: 1.0,
+                false_alarm_probability: 0.05,
+                clutter_density: 1.0,
             },
             tracking: SensorTrackingConfig {
                 max_simultaneous_tracks: 20,
@@ -1228,6 +1289,19 @@ pub struct MissileCountermeasuresConfig {
     pub default_decoys: u32,
     /// Maximum number of decoys
     pub max_decoys: u32,
+    /// Radar cross section of an individual decoy (dBsm). Penetration
+    /// aids are built to MATCH the RV's signature (that's their purpose),
+    /// but cheap replicas/chaff typically run a few dB different from
+    /// the RV midcourse value. Default: -5 dBsm below typical RV
+    /// midcourse RCS, i.e. a replica with slightly different resonance.
+    #[serde(default = "default_decoy_rcs_dbsm")]
+    pub decoy_rcs_dbsm: f64,
+}
+
+fn default_decoy_rcs_dbsm() -> f64 {
+    // Chaff/light-replica aid: well below RV-class signatures (-15..+5),
+    // distinguishable by the discriminator but marginally detectable
+    -22.0
 }
 
 /// Radar cross-section configuration (phase-dependent)
@@ -1423,6 +1497,7 @@ impl MissileConfigRegistry {
                 has_countermeasures: false,
                 default_decoys: 0,
                 max_decoys: 3,
+                decoy_rcs_dbsm: -22.0,
             },
             radar_signature: MissileRcsConfig::default(),
         }

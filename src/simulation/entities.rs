@@ -493,6 +493,77 @@ impl Satellite {
     }
 }
 
+/// A decoy released by a hostile missile during midcourse
+///
+/// Physical model: light replica RVs / chaff clouds inherit the parent's
+/// position at deployment and slowly diverge laterally (drag and
+/// deployment impulse differences vs the parent's vacuum trajectory).
+/// They are radar-visible objects with their own (typically smaller or
+/// chaff-like) RCS. Fire control never engages decoys directly — but the
+/// sensor network can establish tracks on them, and classification is a
+/// per-track judgment (see detection.rs Classification).
+#[derive(Clone, Debug)]
+pub struct Decoy {
+    pub id: EntityId,
+    /// Parent missile that released this decoy (never read by sensor
+    /// paths — classification must derive from measurements only)
+    pub parent_missile_id: EntityId,
+    pub name: String,
+    pub affiliation: Affiliation,
+    /// Current position (ground track)
+    pub position: GeoCoord,
+    /// Current altitude (km)
+    pub altitude_km: f64,
+    /// Radar cross section (dBsm)
+    pub rcs_dbsm: f64,
+    /// Simulation time when released
+    pub deploy_time: f64,
+    /// Deployment bearing offset (deg from parent's azimuth at release)
+    pub drift_bearing_deg: f64,
+    /// Lateral drift rate (km/s) from the deployment impulse
+    pub drift_rate_km_s: f64,
+}
+
+impl Decoy {
+    /// Advance the decoy by one frame.
+    ///
+    /// `dt`: frame time step (s); `parent_altitude_km`: the parent RV's
+    /// CURRENT altitude; `sim_time`: current simulation time.
+    ///
+    /// Motion model: lateral drift at a constant rate along the deployment
+    /// bearing (deployment impulse), plus a growing altitude deficit vs
+    /// the parent — decoys have a far lower ballistic coefficient, so
+    /// they decelerate and fall increasingly behind/below the RV.
+    pub fn update(
+        &mut self,
+        dt: f64,
+        sim_time: f64,
+        parent_altitude_km: f64,
+        parent_position: GeoCoord,
+    ) {
+        // Lateral drift along the deployment bearing
+        if self.drift_rate_km_s > 0.0 {
+            let distance = self.drift_rate_km_s * dt;
+            self.position = crate::simulation::physics::geodesic_direct(
+                self.position,
+                self.drift_bearing_deg,
+                distance,
+            );
+        }
+
+        // Altitude deficit grows with time since deployment (high-drag
+        // replica/chaff falls behind the vacuum-trajectory parent). The
+        // deficit is a fraction of the parent's current altitude, capped.
+        let since_deploy = (sim_time - self.deploy_time).max(0.0);
+        let deficit_frac = (since_deploy * 0.01).min(0.4);
+        self.altitude_km = (parent_altitude_km * (1.0 - deficit_frac)).max(0.0);
+
+        // Decoys never rise above the parent
+        debug_assert!(self.altitude_km <= parent_altitude_km * 1.01);
+        let _ = parent_position; // reserved for future parent-relative effects
+    }
+}
+
 /// A ground-based radar station
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RadarStation {

@@ -26,6 +26,11 @@ min_sub_steps = 1
 # Outside this distance, use min_sub_steps
 precision_distance_km = 50.0
 
+# Fraction of the physical Coriolis cross-track deflection visible mid-flight
+# (guided missiles pre-compensate launch/impact; the canted midcourse profile
+# is what sensors observe). 0.0 disables the model.
+coriolis_residual_fraction = 0.15
+
 # =============================================================================
 # Probability of Kill (Pk) Factor Weights
 # =============================================================================
@@ -65,6 +70,10 @@ prediction_error = 2.0
 # More decoys = harder for seeker to discriminate real target
 countermeasures = 1.0
 
+# Discrimination - how confident the sensor network is that the track is
+# the real RV and not a decoy. Unresolved signatures risk wasting rounds.
+discrimination = 1.0
+
 # Closure speed - combined approach velocity of interceptor and missile
 # Higher closure = less time for seeker to acquire, track, and maneuver
 closure_speed = 1.0
@@ -85,3 +94,17 @@ energy_state = 0.3
 # Higher = factors have more dramatic impact on final Pk
 # Recommended range: 2.0 (forgiving) to 6.0 (punishing)
 severity_scale = 4.0
+
+# =============================================================================
+# Coriolis Deflection (added under the existing [physics] table above)
+# =============================================================================
+#
+# Guided missiles pre-compensate for Earth's rotation, so launch and impact
+# stay on the scenario's great-circle path. Mid-flight, however, the airframe
+# flies a slightly canted profile - the residual cross-track offset that
+# sensors actually observe (a few km for an MRBM, tens of km at ICBM range).
+#
+# 0.0 disables the model. 0.15 = default realistic residual.
+#
+# In the [physics] section (top of file):
+#   coriolis_residual_fraction = 0.15

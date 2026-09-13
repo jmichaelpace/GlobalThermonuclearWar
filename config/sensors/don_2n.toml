@@ -38,3 +38,7 @@ max_fire_control_tracks = 16
 azimuth_bias_deg = 0.13
 elevation_bias_deg = 0.10
 range_bias_km = 0.04
+# Clutter physics (Phase 5): per-scan false-alarm probability and
+# clutter-density multiplier for Pd degradation (Skolnik ch. 7).
+false_alarm_probability = 0.06
+clutter_density = 1.3

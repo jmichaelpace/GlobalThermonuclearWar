@@ -210,6 +210,9 @@ pub struct SimulationEngine {
     pub radar_stations: Vec<RadarStation>,
     /// All interceptors in flight
     pub interceptors: Vec<Interceptor>,
+    /// Decoys released by hostile missiles (tracked radar objects;
+    /// never engaged, but visible to sensors and classifiable)
+    pub decoys: Vec<Decoy>,
     /// Cached trajectories for missiles (HashMap for O(1) lookup)
     trajectories: HashMap<EntityId, BallisticTrajectory>,
     /// Detection system for tracking sensors and targets
@@ -320,6 +323,7 @@ impl SimulationEngine {
             satellites: Vec::new(),
             radar_stations: Vec::new(),
             interceptors: Vec::new(),
+            decoys: Vec::new(),
             trajectories: HashMap::new(),
             detection: DetectionSystem::new(),
             interceptors_per_target: std::collections::HashMap::new(),
@@ -390,7 +394,8 @@ impl SimulationEngine {
         let flight_time = config.trajectory.flight_time_base_sec
             + range_km * config.trajectory.flight_time_range_factor;
 
-        let trajectory = BallisticTrajectory::with_params(origin, target, apogee, flight_time);
+        let trajectory = BallisticTrajectory::with_params(origin, target, apogee, flight_time)
+            .with_coriolis_residual(self.physics_config.coriolis_residual_fraction);
 
         let mut missile = Missile::new(id, name, affiliation, origin, target, flight_time);
         missile.launch_time = launch_time;
@@ -458,7 +463,8 @@ impl SimulationEngine {
         let flight_time = config.trajectory.flight_time_base_sec
             + range_km * config.trajectory.flight_time_range_factor;
 
-        let trajectory = BallisticTrajectory::with_params(origin, target, apogee, flight_time);
+        let trajectory = BallisticTrajectory::with_params(origin, target, apogee, flight_time)
+            .with_coriolis_residual(self.physics_config.coriolis_residual_fraction);
 
         let mut missile = Missile::new(id, name, affiliation, origin, target, flight_time)
             .with_countermeasures(max_decoys);
@@ -654,6 +660,9 @@ impl SimulationEngine {
                 // Deploy decoys for missiles being tracked
                 self.deploy_missile_decoys();
 
+                // Advance decoy entities (drift, altitude deficit, reaping)
+                self.update_decoys(sim_dt);
+
                 // Update detection system (doesn't need sub-step precision)
                 self.detection.update(
                     &self.missiles,
@@ -661,6 +670,7 @@ impl SimulationEngine {
                     &self.radar_stations,
                     &self.satellites,
                     &self.interceptors,
+                    &self.decoys,
                     &self.sensor_configs,
                     sim_dt, // Full frame dt for detection
                     sim_time,
@@ -723,6 +733,10 @@ impl SimulationEngine {
             .map(|i| i.target_id)
             .collect();
 
+        // Spawn one Decoy entity per successful deployment (the scalar
+        // counter stays for Pk countermeasure effects)
+        let sim_time = self.sim_time;
+        let mut deployments: Vec<(EntityId, String, Affiliation, GeoCoord, f64, u32)> = Vec::new();
         for missile in &mut self.missiles {
             // Only deploy decoys during midcourse phase when being tracked
             if missile.status != MissileStatus::Midcourse {
@@ -735,8 +749,79 @@ impl SimulationEngine {
             }
 
             // Deploy a decoy if available (one per update cycle to spread them out)
-            missile.deploy_decoy();
+            if missile.deploy_decoy() {
+                deployments.push((
+                    missile.id,
+                    missile.name.clone(),
+                    missile.affiliation,
+                    missile.position,
+                    missile.altitude_km,
+                    missile.decoys_deployed,
+                ));
+            }
         }
+
+        // Now spawn decoy entities (borrow of self.missiles released)
+        let mut new_decoys: Vec<Decoy> = Vec::new();
+        for (parent_id, missile_name, affiliation, position, altitude_km, deployed_count) in
+            deployments
+        {
+            let decoy_rcs_dbsm = self
+                .missile_configs
+                .get_by_name(&missile_name)
+                .countermeasures
+                .decoy_rcs_dbsm;
+            // Deployment impulse directions spread symmetrically:
+            // alternate left/right of the flight azimuth
+            let side = if deployed_count % 2 == 0 { 1.0 } else { -1.0 };
+            let flight_azimuth = self
+                .trajectories
+                .get(&parent_id)
+                .map(|t| t.origin_azimuth_for_decoys())
+                .unwrap_or(0.0);
+            let drift_bearing = (flight_azimuth + side * 55.0).rem_euclid(360.0);
+            new_decoys.push(Decoy {
+                id: self.new_id(),
+                parent_missile_id: parent_id,
+                name: format!("{missile_name} decoy #{deployed_count}"),
+                affiliation,
+                position,
+                altitude_km,
+                rcs_dbsm: decoy_rcs_dbsm,
+                deploy_time: sim_time,
+                drift_bearing_deg: drift_bearing,
+                drift_rate_km_s: 0.012, // ~12 m/s lateral separation
+            });
+        }
+        self.decoys.extend(new_decoys);
+    }
+
+    /// Advance decoys: lateral drift + falling altitude deficit vs parent.
+    /// Decoys whose parent is gone (intercepted/impacted) decay to ground.
+    fn update_decoys(&mut self, sim_dt: f64) {
+        let parents: HashMap<EntityId, (GeoCoord, f64, MissileStatus)> = self
+            .missiles
+            .iter()
+            .map(|m| (m.id, (m.position, m.altitude_km, m.status)))
+            .collect();
+
+        for decoy in &mut self.decoys {
+            if let Some(&(pos, alt, status)) = parents.get(&decoy.parent_missile_id) {
+                if status == MissileStatus::Intercepted || status == MissileStatus::Impacted {
+                    // Parent resolved: decoys lose their template; settle down
+                    decoy.altitude_km = (decoy.altitude_km - sim_dt * 0.5).max(0.0);
+                } else {
+                    decoy.update(sim_dt, self.sim_time, alt, pos);
+                }
+            } else {
+                // Parent removed entirely (e.g. scenario reset clears missiles):
+                // decoys decay to ground and will be reaped
+                decoy.altitude_km = (decoy.altitude_km - sim_dt * 0.5).max(0.0);
+            }
+        }
+
+        // Reap decoys that have reached the ground
+        self.decoys.retain(|d| d.altitude_km > 0.05);
     }
 
     /// Update all interceptors in flight - realistic kinematics with terminal homing
@@ -878,7 +963,10 @@ impl SimulationEngine {
                     converged.target,
                     converged.apogee_km,
                     converged.flight_time_sec,
-                );
+                )
+                // Sensor-derived reconstruction: the measured path already
+                // contains the real deflection; zero the analytic model
+                .with_coriolis_residual(0.0);
 
                 // Current progress from the fused track position along the
                 // estimated path (constant ground speed model)
@@ -1842,7 +1930,10 @@ impl SimulationEngine {
                                 converged.target,
                                 converged.apogee_km,
                                 converged.flight_time_sec,
-                            );
+                            )
+                            // Sensor-derived reconstruction: the measured path already
+                            // contains the real deflection; zero the analytic model
+                            .with_coriolis_residual(0.0);
                             // Current progress from the interceptor's own view:
                             // fused position projected on the estimated path
                             let defense_unit_ids: std::collections::HashSet<EntityId> =
@@ -1905,12 +1996,29 @@ impl SimulationEngine {
                         None => (0.5, 0.5), // Unknown prediction quality — neutral-low
                     };
 
+                    // Discrimination factor: confidence the track is the real
+                    // RV (sensor-derived classification). Launch doctrine
+                    // already skips likely-decoy tracks; this penalizes
+                    // engaging with an unresolved signature (seeker may
+                    // home the decoy cloud). Read from the live fused track.
+                    let defense_unit_ids_pk: std::collections::HashSet<EntityId> =
+                        self.defense_units.iter().map(|u| u.id).collect();
+                    let discrimination_factor = match self.detection.get_fused_track(
+                        i.target_id,
+                        &defense_unit_ids_pk,
+                        self.sim_time,
+                    ) {
+                        Some(ft) => 1.0 - ft.classification.p_decoy,
+                        None => 0.8, // No track — moderately degraded confidence
+                    };
+
                     // Combine all factors using weighted log-odds
                     let factors = [
                         (timing_factor, pk_weights.timing_sync),
                         (track_factor, pk_weights.track_quality),
                         (prediction_factor, pk_weights.prediction_error),
                         (countermeasure_factor, pk_weights.countermeasures),
+                        (discrimination_factor, pk_weights.discrimination),
                         (closure_factor, pk_weights.closure_speed),
                         (aspect_factor, pk_weights.aspect_angle),
                         (energy_factor, pk_weights.energy_state),
@@ -2107,14 +2215,33 @@ impl SimulationEngine {
                 // (sensor-derived), never the missile's true position.
                 let defense_unit_ids_fc: std::collections::HashSet<EntityId> =
                     self.defense_units.iter().map(|u| u.id).collect();
-                let fused_pos =
+                let fused_track =
                     match self
                         .detection
                         .get_fused_track(target_id, &defense_unit_ids_fc, sim_time)
                     {
-                        Some(ft) => ft.estimated_position,
+                        Some(ft) => ft,
                         None => continue, // No sensor track — cannot engage
                     };
+
+                // RV discrimination doctrine (sensor-derived classification):
+                // - Likely-decoy tracks are NOT engaged (ammo conservation)
+                // - Unresolved tracks engage only when the threat is
+                //   terminal (no time left to wait) or the battery has
+                //   ammo to spare (>50% remaining)
+                if fused_track.classification.is_likely_decoy() {
+                    continue; // Confirmed decoy: don't waste a round
+                }
+                if fused_track.classification.is_unresolved()
+                    && missile.status != MissileStatus::Terminal
+                    && unit.interceptors_remaining * 2 <= unit.max_interceptors
+                {
+                    // Unresolved signature + midcourse + conserving ammo:
+                    // hold fire and let the discriminator accumulate
+                    continue;
+                }
+
+                let fused_pos = fused_track.estimated_position;
 
                 let distance = haversine_distance(unit.position, fused_pos);
                 let sensor_config = self.sensor_configs.get_by_name(&unit.sensor_config_name);
@@ -2456,7 +2583,10 @@ impl SimulationEngine {
             converged.target,
             converged.apogee_km,
             converged.flight_time_sec,
-        );
+        )
+        // Sensor-derived reconstruction: the measured path already
+        // contains the real deflection; zero the analytic model
+        .with_coriolis_residual(0.0);
 
         // Estimate current flight progress from the fused position along the
         // estimated origin->target path. Progress = fraction of range already
@@ -2968,7 +3098,22 @@ impl SimulationEngine {
                                 | MissileStatus::Terminal
                         )
                 });
-                if target_still_valid {
+                // SLS doctrine: don't follow up on a track the
+                // discriminator now believes is a decoy (the miss may
+                // have been a decoy cloud all along)
+                let not_classified_decoy = {
+                    let defense_unit_ids_sls: std::collections::HashSet<EntityId> =
+                        self.defense_units.iter().map(|u| u.id).collect();
+                    match self.detection.get_fused_track(
+                        *target_id,
+                        &defense_unit_ids_sls,
+                        self.sim_time,
+                    ) {
+                        Some(ft) => !ft.classification.is_likely_decoy(),
+                        None => true, // No track — fall through to normal SLS
+                    }
+                };
+                if target_still_valid && not_classified_decoy {
                     self.targets_needing_followup.insert(*target_id);
                 }
             }

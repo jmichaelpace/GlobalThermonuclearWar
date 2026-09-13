@@ -448,6 +448,7 @@ impl App {
             radar_stations: simulation.radar_stations.clone(),
             satellites: simulation.satellites.clone(),
             debris_clouds: simulation.debris_clouds.clone(),
+            decoys: simulation.decoys.clone(),
             active_detections: simulation.detection.active_detections.clone(),
             radar_mode_states: simulation.detection.radar_mode_states.clone(),
         }
@@ -3359,6 +3360,8 @@ impl App {
                 for missile in &self.snapshot.missiles {
                     self.render_missile(painter, screen_rect, missile);
                 }
+                // Decoys (truth view: small hollow markers)
+                self.render_decoys(painter, screen_rect);
             }
             TrackViewMode::DetectedTrack => {
                 // Show missiles at sensor-perceived positions with uncertainty
@@ -4515,6 +4518,62 @@ impl App {
         }
 
         segments
+    }
+
+    /// Render decoy entities: small hollow diamond markers, distinct from
+    /// the solid RV symbols. True-track view draws them at truth positions;
+    /// detected-track mode shows them only if a fused track exists (and
+    /// colors by classification confidence).
+    fn render_decoys(&self, painter: &egui::Painter, screen_rect: egui::Rect) {
+        for decoy in &self.snapshot.decoys {
+            if decoy.altitude_km <= 0.1 {
+                continue; // Settled to ground
+            }
+            let pos = self.viewport.geo_to_screen(decoy.position, screen_rect);
+            if !screen_rect.contains(pos) {
+                continue;
+            }
+
+            // Classification color if a fused track exists on this decoy
+            let defense_unit_ids: std::collections::HashSet<u64> =
+                self.snapshot.defense_units.iter().map(|u| u.id).collect();
+            let classification = self
+                .simulation
+                .detection
+                .get_fused_track(decoy.id, &defense_unit_ids, self.snapshot.sim_time)
+                .map(|ft| ft.classification);
+
+            // Hollow diamond: hostile amber by default; solid-ish teal when
+            // classified as likely decoy (the operator sees the
+            // discriminator's conclusion)
+            let (stroke, fill) = match classification {
+                Some(cls) if cls.is_likely_decoy() => (
+                    egui::Color32::from_rgb(70, 190, 180),
+                    egui::Color32::from_rgba_unmultiplied(70, 190, 180, 50),
+                ),
+                Some(cls) if cls.is_unresolved() => (
+                    egui::Color32::from_rgb(230, 200, 90),
+                    egui::Color32::from_rgba_unmultiplied(230, 200, 90, 35),
+                ),
+                _ => (
+                    egui::Color32::from_rgb(240, 150, 60),
+                    egui::Color32::TRANSPARENT,
+                ),
+            };
+
+            let size = 5.0;
+            let points = vec![
+                egui::pos2(pos.x, pos.y - size),
+                egui::pos2(pos.x + size, pos.y),
+                egui::pos2(pos.x, pos.y + size),
+                egui::pos2(pos.x - size, pos.y),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                fill,
+                egui::Stroke::new(1.5, stroke),
+            ));
+        }
     }
 
     fn render_missile(&self, painter: &egui::Painter, screen_rect: egui::Rect, missile: &Missile) {
@@ -6144,6 +6203,30 @@ impl App {
                         missile.decoys_deployed, missile.max_decoys
                     ));
                     ui.end_row();
+
+                    // Deployed decoy objects (names + classification state)
+                    let parent_decoys: Vec<&crate::simulation::entities::Decoy> = self
+                        .snapshot
+                        .decoys
+                        .iter()
+                        .filter(|d| d.parent_missile_id == missile.id)
+                        .collect();
+                    if !parent_decoys.is_empty() {
+                        ui.label("Deployed Aids:");
+                        ui.vertical(|ui| {
+                            for decoy in parent_decoys {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "◇ {} ({:.0} km)",
+                                        decoy.name, decoy.altitude_km
+                                    ))
+                                    .weak()
+                                    .small(),
+                                );
+                            }
+                        });
+                        ui.end_row();
+                    }
 
                     ui.label("Hit Prob Reduction:");
                     let reduction = (1.0 - missile.decoy_effectiveness()) * 100.0;
