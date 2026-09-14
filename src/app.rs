@@ -2081,8 +2081,16 @@ impl App {
                 continue;
             }
 
-            // Use the ground truth trajectory from missile launch for visualization
-            let trajectory = BallisticTrajectory::new(missile.origin, missile.target);
+            // Use the ground truth trajectory from missile launch for visualization.
+            // Prefer the ENGINE'S STORED trajectory — the exact object the
+            // missile flies (config-backed apogee/flight-time, Coriolis-
+            // deflected track) — so the arc and the icon stay on the same
+            // path. Fall back to reconstruction only for legacy missiles.
+            let fallback = BallisticTrajectory::new(missile.origin, missile.target);
+            let trajectory = match self.simulation.get_trajectory(missile.id) {
+                Some(t) => t,
+                None => &fallback,
+            };
             let progress = missile.flight_progress();
 
             // Draw trajectory arc - ground truth path for better accuracy
@@ -2160,12 +2168,17 @@ impl App {
             };
 
             // Create a BallisticTrajectory from the converged data (sensor-derived)
+            // Sensor-derived reconstruction: zero the analytic Coriolis model
+            // (same as the engine's fire-control fits — the measured path already
+            // contains the real deflection; double-counting would push the drawn
+            // arc off the estimate the icon is placed on)
             let trajectory = BallisticTrajectory::with_params(
                 converged.origin,
                 converged.target,
                 converged.apogee_km,
                 converged.flight_time_sec,
-            );
+            )
+            .with_coriolis_residual(0.0);
 
             // Estimate current progress along the predicted trajectory
             let velocity = match &track.estimated_velocity {
@@ -3951,7 +3964,17 @@ impl App {
             let is_intercepted = missile.status == MissileStatus::Intercepted;
 
             if is_in_flight || is_intercepted {
-                let trajectory = BallisticTrajectory::new(missile.origin, missile.target);
+                // Draw the trajectory the missile ACTUALLY flies: the
+                // engine's stored object (config-backed apogee/flight-time,
+                // Coriolis-deflected ground track). Reconstructing from
+                // origin/target with BallisticTrajectory::new would use a
+                // DIFFERENT apogee/flight-time model, so the arc and the
+                // icon would disagree.
+                let fallback = BallisticTrajectory::new(missile.origin, missile.target);
+                let trajectory = match self.simulation.get_trajectory(missile.id) {
+                    Some(t) => t,
+                    None => &fallback,
+                };
                 // Use actual flight progress - for intercepted missiles this is frozen at intercept time
                 let progress = missile.flight_progress();
                 let num_points = 100;
@@ -4241,12 +4264,17 @@ impl App {
             };
 
             // Create a BallisticTrajectory from the converged data
+            // Sensor-derived reconstruction: zero the analytic Coriolis model
+            // (same as the engine's fire-control fits — the measured path already
+            // contains the real deflection; double-counting would push the drawn
+            // arc off the estimate the icon is placed on)
             let trajectory = BallisticTrajectory::with_params(
                 converged.origin,
                 converged.target,
                 converged.apogee_km,
                 converged.flight_time_sec,
-            );
+            )
+            .with_coriolis_residual(0.0);
 
             // Estimate current progress along the predicted trajectory
             let velocity = match &track.estimated_velocity {

@@ -3210,6 +3210,7 @@ impl SimulationEngine {
         self.shots_fired_per_target.clear();
         self.detection = DetectionSystem::new();
         self.debris_clouds.clear();
+        self.decoys.clear();
         self.kill_assessments.clear();
         self.assessed_interceptors.clear();
         self.next_id = 1;
