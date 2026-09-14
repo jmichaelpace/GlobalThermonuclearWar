@@ -275,6 +275,132 @@ pub struct ViewPreset {
     pub zoom: f64,
 }
 
+/// Operator-display smoothing for a detected track (alpha filter).
+///
+/// Real C2 consoles smooth the displayed symbol: the underlying track
+/// data carries realistic measurement noise (Phase 4 angular/range
+/// scatter at radar update rates), and drawing the raw per-frame fusion
+/// makes the icon and uncertainty ellipse visibly jitter. This filter
+/// is PURELY COSMETIC — fire control, guidance, and the event/BDA
+/// chain all consume the raw fused track. The display:
+///   1. dead-reckons the last smoothed position along the track's
+///      velocity for the elapsed wall time, then
+///   2. blends toward the fresh fused estimate with an alpha that
+///      RISES with track quality (high quality -> follow tightly) and
+///      DROPS when the new estimate jumps far (let the display lag
+///      briefly rather than teleport-snap on a noisy outlier).
+/// On the first frame (or after a gap/teleport) the filter snaps to
+/// the estimate so it never starts from a stale position.
+#[derive(Clone, Debug)]
+struct TrackDisplayFilter {
+    /// Last smoothed position
+    pos: GeoCoord,
+    /// Last smoothed altitude (km)
+    alt_km: f64,
+    /// Last smoothed display heading (deg) for the symbol orientation
+    /// (smoothed separately in angular space to avoid symbol twitch)
+    heading_deg: Option<f64>,
+    /// Last smoothed uncertainty ellipse radius (km) — the raw radius
+    /// pulses with per-frame quality/staleness; the display eases it
+    uncertainty_km: Option<f64>,
+    /// Wall-clock time of the last update
+    last_instant: Instant,
+    /// True once initialized (first frame snaps)
+    initialized: bool,
+}
+
+impl TrackDisplayFilter {
+    /// Smoothed display position for the given fused track this frame.
+    /// Returns (position, altitude).
+    fn update(&mut self, track: &FusedTrack, now: Instant) -> (GeoCoord, f64) {
+        let raw = track.estimated_position;
+        let raw_alt = track.estimated_altitude;
+
+        if !self.initialized {
+            self.initialized = true;
+            self.pos = raw;
+            self.alt_km = raw_alt;
+            self.last_instant = now;
+            return (raw, raw_alt);
+        }
+
+        let dt = now.duration_since(self.last_instant).as_secs_f64().min(1.0); // clamp: no giant leaps after a stall
+        self.last_instant = now;
+
+        // 1. Dead-reckon along the fused velocity (display continues
+        //    moving smoothly between radar updates)
+        let (predicted_pos, predicted_alt) = match &track.estimated_velocity {
+            Some(v) => {
+                let dist = v.ground_speed_km_s * dt;
+                (
+                    crate::simulation::calculate_position_from_bearing_range(
+                        self.pos,
+                        v.heading_deg,
+                        dist,
+                    ),
+                    self.alt_km + v.vertical_rate_km_s * dt,
+                )
+            }
+            None => (self.pos, self.alt_km),
+        };
+
+        // 2. Blend toward the fresh estimate. Alpha scales with track
+        //    quality; a big jump (> 3 km + uncertainty) damps alpha so a
+        //    noisy outlier doesn't snap the symbol.
+        let jump_km = crate::simulation::haversine_distance(predicted_pos, raw);
+        let outlier_damp = if jump_km > 3.0 + track.uncertainty_radius_km {
+            0.15
+        } else {
+            1.0
+        };
+        let alpha = (0.25 + 0.45 * track.fused_quality).clamp(0.2, 0.7) * outlier_damp;
+
+        let lat = predicted_pos.lat + (raw.lat - predicted_pos.lat) * alpha;
+        let lon = predicted_pos.lon + shortest_lon_delta(predicted_pos.lon, raw.lon) * alpha;
+        let alt = predicted_alt + (raw_alt - predicted_alt) * alpha;
+
+        self.pos = GeoCoord::new(lat, lon);
+        self.alt_km = alt;
+        (self.pos, self.alt_km)
+    }
+
+    /// Smoothed symbol heading (deg). Fused-heading noise makes the raw
+    /// value twitch frame to frame; ease it toward the raw heading in
+    /// angular space with a slow alpha (symbol rotation looks natural
+    /// lagging slightly, never snapping).
+    fn display_heading(&mut self, raw_heading_deg: f64) -> f64 {
+        match self.heading_deg {
+            None => {
+                self.heading_deg = Some(raw_heading_deg);
+                raw_heading_deg
+            }
+            Some(prev) => {
+                let delta = shortest_lon_delta(prev, raw_heading_deg);
+                let eased = prev + delta * 0.15;
+                self.heading_deg = Some(eased);
+                eased
+            }
+        }
+    }
+
+    /// Smoothed uncertainty ellipse radius (km): the raw radius pulses
+    /// with per-frame quality/staleness; ease it slowly (the ellipse is
+    /// an uncertainty cue, not a live measurement readout).
+    fn display_uncertainty_km(&mut self, raw_km: f64) -> f64 {
+        match self.uncertainty_km {
+            None => {
+                self.uncertainty_km = Some(raw_km);
+                raw_km
+            }
+            Some(prev) => {
+                let eased = prev + (raw_km - prev) * 0.1;
+                self.uncertainty_km = Some(eased);
+                eased
+            }
+        }
+    }
+}
+
 /// Shortest signed longitude delta from `from` to `to` (degrees), handling
 /// antimeridian wraparound: e.g. 179 -> -179 is +2, not -358.
 fn shortest_lon_delta(from: f64, to: f64) -> f64 {
@@ -368,6 +494,13 @@ pub struct App {
     track_view_mode: TrackViewMode,
     // Whether to show false alarms in detected mode
     show_false_alarms: bool,
+    // Display smoothing for detected-track symbols (operator-view
+    // alpha filter, keyed by target id). Purely cosmetic: fire control
+    // consumes the raw fused track; this only reduces visual jitter of
+    // the icon/ellipse on the map.
+    track_display_filters: std::cell::RefCell<std::collections::HashMap<u64, TrackDisplayFilter>>,
+    // Smoothing toggle (default on) — operators expect a stable display
+    show_track_smoothing: bool,
     // Cached scenarios (loaded once at startup)
     scenarios: Vec<ScenarioDefinition>,
     // Scenario builder (Some = builder mode active)
@@ -429,6 +562,8 @@ impl App {
             gibs_tile_cache: GibsTileCache::new(),
             track_view_mode: TrackViewMode::DetectedTrack,
             show_false_alarms: true,
+            track_display_filters: std::cell::RefCell::new(std::collections::HashMap::new()),
+            show_track_smoothing: true,
             scenarios, // Cache scenarios loaded at startup
             builder: None,
             follow_target: None,
@@ -515,6 +650,9 @@ impl App {
         self.audio.reset();
         self.alert_tracker.reset();
         self.follow_target = None;
+        // Display filters are keyed by entity id — clear them so a fresh
+        // scenario never inherits stale smoothed positions
+        self.track_display_filters.borrow_mut().clear();
     }
 
     /// Assess the sensor-derived threat level and update the DEFCON state.
@@ -3026,8 +3164,10 @@ impl App {
         screen_center: egui::Pos2,
         fused_track: &FusedTrack,
     ) {
-        // Use sensor-estimated position, not ground truth
-        let estimated_pos = fused_track.estimated_position;
+        // Use sensor-estimated position, not ground truth — smoothed for
+        // display (same operator-view filter as the 2D map)
+        let (estimated_pos, _estimated_alt) = self.display_pos_for_track(fused_track);
+        let display_uncertainty_km = self.display_uncertainty_for_track(fused_track);
 
         // Get actual missile only for heading calculation (target destination)
         let missile = self
@@ -3040,7 +3180,7 @@ impl App {
             // Convert uncertainty to screen pixels (approximate)
             // On globe, 1 degree ≈ globe_radius * (π/180) pixels
             let deg_per_pixel = 180.0 / (std::f64::consts::PI * self.globe_state.radius as f64);
-            let uncertainty_deg = fused_track.uncertainty_radius_km / 111.32;
+            let uncertainty_deg = display_uncertainty_km / 111.32;
             let uncertainty_pixels = (uncertainty_deg / deg_per_pixel).max(8.0) as f32;
 
             // Draw uncertainty ellipse
@@ -3058,12 +3198,13 @@ impl App {
                 self.draw_track_info_badge(painter, pos, fused_track);
             }
 
-            // Use predicted heading from track, or calculate from missile target if available
-            let heading = if let Some(missile) = missile {
-                bearing(estimated_pos, missile.target)
-            } else {
-                fused_track.predicted_heading_deg
+            // Use predicted heading from track, or calculate from missile
+            // target if available; symbol angle is display-eased either way
+            let raw_heading = match missile {
+                Some(missile) => bearing(estimated_pos, missile.target),
+                None => fused_track.predicted_heading_deg,
             };
+            let heading = self.display_heading_for_track(fused_track, raw_heading);
 
             // Fire control lock only when defense unit radar is tracking
             // AND track quality requirements are met
@@ -4668,8 +4809,13 @@ impl App {
         screen_rect: egui::Rect,
         fused_track: &FusedTrack,
     ) {
-        // Use sensor-estimated position, not ground truth
-        let estimated_pos = fused_track.estimated_position;
+        // Use sensor-estimated position, not ground truth — smoothed for
+        // display (the underlying track data is unchanged; fire control
+        // consumes the raw fused estimate). Reduces per-measurement jitter
+        // of the icon and uncertainty ellipse.
+        let (estimated_pos, estimated_alt) = self.display_pos_for_track(fused_track);
+        // Ellipse radius eased per-frame (raw value pulses with quality)
+        let display_uncertainty_km = self.display_uncertainty_for_track(fused_track);
 
         // Get actual missile only for heading calculation (target destination)
         let missile = self
@@ -4684,19 +4830,20 @@ impl App {
 
         // Convert uncertainty from km to screen pixels
         let km_per_degree = 111.32;
-        let uncertainty_deg = fused_track.uncertainty_radius_km / km_per_degree;
+        let uncertainty_deg = display_uncertainty_km / km_per_degree;
         let center_screen = self.viewport.geo_to_screen(estimated_pos, screen_rect);
         let edge_pos = GeoCoord::new(estimated_pos.lat + uncertainty_deg, estimated_pos.lon);
         let edge_screen = self.viewport.geo_to_screen(edge_pos, screen_rect);
         let uncertainty_pixels = (center_screen.y - edge_screen.y).abs().max(8.0);
 
-        // Use predicted heading from track, or calculate from missile target if available
-        let heading = if let Some(missile) = missile {
-            let bearing_deg = bearing(estimated_pos, missile.target);
-            ((bearing_deg - 90.0) as f32).to_radians()
-        } else {
-            (fused_track.predicted_heading_deg as f32 - 90.0).to_radians()
+        // Use predicted heading from track, or calculate from missile target if available;
+        // the symbol angle is display-eased either way (raw fused headings twitch)
+        let raw_heading = match missile {
+            Some(missile) => bearing(estimated_pos, missile.target),
+            None => fused_track.predicted_heading_deg,
         };
+        let heading_deg = self.display_heading_for_track(fused_track, raw_heading);
+        let heading = ((heading_deg - 90.0) as f32).to_radians();
 
         for pos in positions {
             // Draw uncertainty ellipse first (behind the symbol)
@@ -4844,6 +4991,65 @@ impl App {
     }
 
     /// Draw a small badge showing track info (sensor count, quality)
+    /// Display position for a detected track this frame (operator-view
+    /// smoothing; see TrackDisplayFilter). Falls back to the raw fused
+    /// estimate when smoothing is toggled off or the map is borrowed.
+    fn display_pos_for_track(&self, track: &FusedTrack) -> (GeoCoord, f64) {
+        if !self.show_track_smoothing {
+            return (track.estimated_position, track.estimated_altitude);
+        }
+        let mut filters = self.track_display_filters.borrow_mut();
+        let filter = filters
+            .entry(track.target_id)
+            .or_insert_with(|| TrackDisplayFilter {
+                pos: track.estimated_position,
+                alt_km: track.estimated_altitude,
+                heading_deg: None,
+                uncertainty_km: None,
+                last_instant: Instant::now(),
+                initialized: false,
+            });
+        filter.update(track, Instant::now())
+    }
+
+    /// Display-eased symbol heading (deg) for a track's raw heading value
+    fn display_heading_for_track(&self, track: &FusedTrack, raw_heading_deg: f64) -> f64 {
+        if !self.show_track_smoothing {
+            return raw_heading_deg;
+        }
+        let mut filters = self.track_display_filters.borrow_mut();
+        let filter = filters
+            .entry(track.target_id)
+            .or_insert_with(|| TrackDisplayFilter {
+                pos: track.estimated_position,
+                alt_km: track.estimated_altitude,
+                heading_deg: None,
+                uncertainty_km: None,
+                last_instant: Instant::now(),
+                initialized: false,
+            });
+        filter.display_heading(raw_heading_deg)
+    }
+
+    /// Display-eased uncertainty ellipse radius (km)
+    fn display_uncertainty_for_track(&self, track: &FusedTrack) -> f64 {
+        if !self.show_track_smoothing {
+            return track.uncertainty_radius_km;
+        }
+        let mut filters = self.track_display_filters.borrow_mut();
+        let filter = filters
+            .entry(track.target_id)
+            .or_insert_with(|| TrackDisplayFilter {
+                pos: track.estimated_position,
+                alt_km: track.estimated_altitude,
+                heading_deg: None,
+                uncertainty_km: None,
+                last_instant: Instant::now(),
+                initialized: false,
+            });
+        filter.display_uncertainty_km(track.uncertainty_radius_km)
+    }
+
     fn draw_track_info_badge(&self, painter: &egui::Painter, pos: egui::Pos2, track: &FusedTrack) {
         let badge_pos = egui::Pos2::new(pos.x + 14.0, pos.y - 14.0);
 
@@ -8928,6 +9134,12 @@ impl eframe::App for App {
                 if self.track_view_mode == TrackViewMode::DetectedTrack {
                     ui.checkbox(&mut self.show_false_alarms, "Clutter");
                     ui.checkbox(&mut self.show_track_quality, "Quality");
+                    ui.checkbox(&mut self.show_track_smoothing, "Smooth")
+                        .on_hover_text(
+                            "Operator-display smoothing of detected symbols: eases icon/\
+                             heading/uncertainty jitter from measurement noise (display-\
+                             only; fire control uses raw track data)",
+                        );
                 }
 
                 ui.separator();
