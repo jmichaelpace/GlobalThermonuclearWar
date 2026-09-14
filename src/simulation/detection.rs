@@ -3243,8 +3243,20 @@ impl DetectionSystem {
         match existing {
             Some(mut ex) => {
                 let mut w = weight;
-                // Outlier dampening: a single wild measurement can't yank the estimate
-                if ex.sample_count >= 5 && haversine_distance(ex.target, target) > 400.0 {
+                // Outlier dampening: a single wild measurement can't yank a
+                // CONVERGED estimate. Gate on accumulated evidence weight,
+                // not raw sample count: a young estimate (few short-span
+                // samples, tiny total_weight) is an extrapolation, not a
+                // converged solution — correct samples far from it must be
+                // allowed to move it freely. Dampening on sample count alone
+                // locked the estimate onto its garbage first extrapolation
+                // (observed: impact estimate stuck ~580 km wrong for most of
+                // an engagement while every correct fit sample was treated
+                // as the outlier).
+                const EVIDENCE_FOR_OUTLIER_PROTECTION: f64 = 1.0;
+                if ex.total_weight >= EVIDENCE_FOR_OUTLIER_PROTECTION
+                    && haversine_distance(ex.target, target) > 400.0
+                {
                     w *= 0.1;
                 }
                 let tw = ex.total_weight + w;
@@ -3267,9 +3279,13 @@ impl DetectionSystem {
                 ex.sample_count += 1;
                 ex.last_meas_ts = newest_meas_ts;
                 ex.confidence = (ex.confidence * 0.85 + velocity.confidence * 0.15).min(0.95);
-                // Uncertainty shrinks monotonically with accumulated evidence
-                ex.target_uncertainty_km = (50.0 / (1.0 + ex.total_weight)).max(10.0);
-                ex.origin_uncertainty_km = (25.0 / (1.0 + ex.total_weight)).max(5.0);
+                // Uncertainty shrinks monotonically with accumulated evidence.
+                // The 250 km establishment value reflects what a fresh
+                // short-span extrapolation actually carries (observed:
+                // a first-sample fit can be hundreds of km off on the impact
+                // point); each blended full-span low-residual fit shrinks it.
+                ex.target_uncertainty_km = (250.0 / (1.0 + ex.total_weight)).max(10.0);
+                ex.origin_uncertainty_km = (100.0 / (1.0 + ex.total_weight)).max(5.0);
                 self.converged_trajectories
                     .borrow_mut()
                     .insert(target_id, ex);
@@ -3284,8 +3300,12 @@ impl DetectionSystem {
                     measurements_at_establishment: fused.measurement_count,
                     confidence: velocity.confidence.min(0.95),
                     established_at_sim_time: sim_time,
-                    origin_uncertainty_km: 25.0,
-                    target_uncertainty_km: 50.0,
+                    // A fresh single-sample extrapolation (short altitude-fit
+                    // span, dead-reckoned origin/target) genuinely carries
+                    // ~250 km impact uncertainty — the old 50 km claim made
+                    // fire control commit rounds on noise solutions
+                    origin_uncertainty_km: 100.0,
+                    target_uncertainty_km: 250.0,
                     total_weight: weight,
                     sample_count: 1,
                     last_meas_ts: newest_meas_ts,

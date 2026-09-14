@@ -2549,6 +2549,97 @@ impl SimulationEngine {
         //    the target ONLY through the sensor-derived trajectory model.
         let (converged, _est_flight_time) = self.detection.get_converged_trajectory(target_id)?;
 
+        // 6. Fire-control solution MATURITY gate.
+        //    The converged trajectory is a running weighted mean of
+        //    altitude-fit refinements; early samples are short-span
+        //    extrapolations (weight scaled by (span/60s)^2) whose impact
+        //    estimate can be hundreds of km off. The measurement/quality
+        //    gates above pass within seconds of first detection (a 10 Hz
+        //    radar racks up 10 measurements in ~6 s), so without this gate
+        //    launch fires on an essentially noise solution — observed in
+        //    the AEGIS test scenario: first launch 7 s after first
+        //    detection with the impact estimate 583 km wrong.
+        //    Doctrine (matches real fire control): commit a round only when
+        //    the estimated impact uncertainty is inside what the
+        //    interceptor can correct for with its midcourse divert budget.
+        //    ESCAPE CLAUSE: if the engagement window is closing (the
+        //    missile's remaining flight time on the sensor-derived estimate
+        //    approaches what the interceptor needs to fly a full
+        //    engagement), fire on the best available solution — an
+        //    immature shot beats a leaker.
+        let interceptor_config = self.get_interceptor_config_for_unit(unit);
+        let divert_budget_km = interceptor_config
+            .engagement
+            .midcourse_guidance
+            .divert_budget_km
+            .max(25.0); // Floor: no system commits on worse-than-25km solutions
+        if converged.target_uncertainty_km > divert_budget_km {
+            // Estimate the remaining engagement window: the target's
+            // remaining flight time on the converged profile, minus the
+            // interceptor's time to reach a midcourse intercept point
+            // (roughly the flyout to the current fused position).
+            use crate::simulation::physics::BallisticTrajectory;
+            let recon = BallisticTrajectory::with_params(
+                converged.origin,
+                converged.target,
+                converged.apogee_km,
+                converged.flight_time_sec,
+            )
+            .with_coriolis_residual(0.0);
+            let along_track = haversine_distance(converged.origin, fused_track.estimated_position);
+            let progress = (along_track / recon.range_km.max(1.0)).clamp(0.0, 0.99);
+            let remaining_flight_time = converged.flight_time_sec * (1.0 - progress);
+
+            let kin = InterceptorKinematics::for_defense_type(unit.defense_type);
+            let flyout_to_target =
+                haversine_distance(unit.position, fused_track.estimated_position);
+            let is_endo = matches!(
+                unit.defense_type,
+                DefenseType::Patriot
+                    | DefenseType::THAAD
+                    | DefenseType::IronDome
+                    | DefenseType::DavidsSling
+            );
+            let total_flyout =
+                (flyout_to_target.powi(2) + fused_track.estimated_altitude.powi(2)).sqrt();
+            // Full engagement: flyout + intercept + assessment margin
+            let time_needed = kin
+                .time_to_cover_distance(total_flyout, 0.0, is_endo)
+                .unwrap_or(f64::MAX / 4.0)
+                + 15.0; // assessment/hand-off margin
+
+            // Doctrine escape: if the engagement window is closing — the
+            // remaining flight time no longer covers a full engagement
+            // PLUS a meaningful maturity wait — commit on the best
+            // available solution. An immature shot beats a leaker.
+            // The 60 s allowance matches the altitude-fit weighting timescale
+            // (span_factor = (span/60 s)^2): waiting one more minute is when
+            // full-weight fit samples start dominating the estimate.
+            const MATURITY_WAIT_SEC: f64 = 60.0;
+            if remaining_flight_time - time_needed > MATURITY_WAIT_SEC {
+                // Window is open: hold fire and let the fit mature
+                eprintln!(
+                    "[ENGAGE HOLD] {:?} -> target {}: solution not mature (impact unc {:.0} km > divert budget {:.0} km, weight {:.2}; {:.0}s of wait margin left)",
+                    unit.defense_type,
+                    target_id,
+                    converged.target_uncertainty_km,
+                    divert_budget_km,
+                    converged.total_weight,
+                    remaining_flight_time - time_needed - MATURITY_WAIT_SEC
+                );
+                return None;
+            }
+            eprintln!(
+                "[ENGAGE COMMIT] {:?} -> target {}: window closing ({:.0}s remaining vs {:.0}s needed + {:.0}s maturity wait) - committing on immature solution (unc {:.0} km)",
+                unit.defense_type,
+                target_id,
+                remaining_flight_time,
+                time_needed,
+                MATURITY_WAIT_SEC,
+                converged.target_uncertainty_km
+            );
+        }
+
         self.calculate_intercept_from_converged_trajectory(
             unit,
             &converged,
