@@ -1016,6 +1016,18 @@ impl App {
         // Get visible tiles
         let visible_tiles = self.viewport.get_visible_tiles(available_rect);
 
+        // Idle prefetch: when no exact-level tiles are in flight, quietly
+        // fetch the parents (z-1) of the visible set so a fallback always
+        // exists when the operator zooms. Cheap (a handful of requests,
+        // deduped) and skipped whenever exact tiles are still arriving.
+        if !self.tile_cache.has_loading_tiles() {
+            let coords: Vec<crate::map::TileCoord> =
+                visible_tiles.iter().map(|t| t.coord).collect();
+            if self.tile_cache.prefetch_parents(&coords) > 0 {
+                ui.ctx().request_repaint();
+            }
+        }
+
         // Render tiles
         let painter = ui.painter_at(available_rect);
 
@@ -1029,6 +1041,9 @@ impl App {
                 .visible_tile_screen_rect(visible_tile, available_rect);
 
             if tile_rect.intersects(available_rect) {
+                // Request the exact tile (also retries stale failures),
+                // then draw it or the closest loaded ancestor as a
+                // stand-in (upscaled parent quadrant) — never a blank box
                 if let Some(texture) = self.tile_cache.get_tile(visible_tile.coord) {
                     painter.image(
                         texture.id(),
@@ -1036,6 +1051,11 @@ impl App {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
+                } else if let Some((texture, uv)) = self
+                    .tile_cache
+                    .get_tile_with_fallback(visible_tile.coord, 3)
+                {
+                    painter.image(texture.id(), tile_rect, uv, egui::Color32::WHITE);
                 } else {
                     painter.rect_filled(tile_rect, 0.0, egui::Color32::from_rgb(30, 50, 70));
                 }
