@@ -440,6 +440,22 @@ pub fn ancestor_fallback(coord: TileCoord, levels_up: u8) -> Option<Vec<(TileCoo
     Some(out)
 }
 
+/// Choose a tile zoom level whose native ground resolution best matches a
+/// requested meters-per-pixel target (pure, unit-tested). Web-tile ground
+/// resolution at zoom z is 156543.03 * cos(lat) / 2^z meters/pixel
+/// (256-pixel tiles); pick the z whose resolution is closest without
+/// being much finer than needed (oversampling wastes tiles under a
+/// perspective-squashed plane).
+pub fn zoom_for_resolution(meters_per_pixel: f64, lat_deg: f64) -> u32 {
+    const BASE_RES_M: f64 = 156_543.03; // equatorial, zoom 0, 256px tiles
+    let target = meters_per_pixel.max(1.0);
+    let cos_lat = lat_deg.to_radians().cos().max(0.01);
+    // Exact fractional zoom: BASE*cos/2^z = target -> z = log2(BASE*cos/target)
+    let z_exact = (BASE_RES_M * cos_lat / target).log2();
+    // Round to the nearest integer level; clamp to the standard range
+    (z_exact.round().clamp(0.0, 18.0)) as u32
+}
+
 impl TileCache {
     pub fn new(api_key: String) -> Self {
         let (request_tx, request_rx) = channel::<TileRequest>();
@@ -607,6 +623,41 @@ impl TileCache {
     /// Check if a tile is currently loading
     pub fn is_loading(&self, coord: &TileCoord) -> bool {
         matches!(self.tiles.get(coord), Some(TileStatus::Loading))
+    }
+
+    /// Non-mutating lookup: Some(texture) only if this exact tile is
+    /// loaded, None otherwise. Unlike get_tile this never triggers a
+    /// request — callers use it to read cache state (e.g. the 3D
+    /// intercept view's ground plane, which requests asynchronously
+    /// elsewhere).
+    pub fn peek_loaded(&self, coord: &TileCoord) -> Option<&egui::TextureHandle> {
+        match self.tiles.get(coord) {
+            Some(TileStatus::Loaded(texture)) => Some(texture),
+            _ => None,
+        }
+    }
+
+    /// Look up the closest LOADED ancestor for `coord` without mutating:
+    /// returns (texture, uv) for the nearest cached ancestor within
+    /// `levels_up` (UV selects the quadrant of the ancestor covering
+    /// `coord`). Non-requesting companion to peek_loaded.
+    pub fn peek_loaded_with_fallback(
+        &self,
+        coord: &TileCoord,
+        levels_up: u8,
+    ) -> Option<(&egui::TextureHandle, egui::Rect)> {
+        if let Some(texture) = self.peek_loaded(coord) {
+            return Some((
+                texture,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            ));
+        }
+        for (ancestor, uv) in ancestor_fallback(*coord, levels_up)? {
+            if let Some(texture) = self.peek_loaded(&ancestor) {
+                return Some((texture, uv));
+            }
+        }
+        None
     }
 
     /// Check if any tiles in the cache are currently loading
@@ -832,6 +883,38 @@ mod tests {
     // ---- Prune selection ----
 
     #[test]
+    // ---- Zoom selection for the 3D ground plane ----
+    #[test]
+    fn test_zoom_for_resolution_basics() {
+        // Zoom-0 ground resolution at the equator is 156543 m/px
+        // (40075017 m equatorial circumference / 256 px tile).
+        assert_eq!(zoom_for_resolution(200_000.0, 0.0), 0); // coarser than z0
+        assert_eq!(zoom_for_resolution(70_000.0, 0.0), 1);
+        assert_eq!(zoom_for_resolution(1000.0, 0.0), 7);
+        assert_eq!(zoom_for_resolution(500.0, 0.0), 8);
+        // Fine resolution (city scale, ~10 m/px) -> z 14
+        assert_eq!(zoom_for_resolution(10.0, 0.0), 14);
+        // Monotone: finer targets choose higher zooms
+        let z1 = zoom_for_resolution(1000.0, 45.0);
+        let z2 = zoom_for_resolution(500.0, 45.0);
+        assert!(z2 >= z1, "finer resolution must not lower the zoom");
+    }
+
+    #[test]
+    fn test_zoom_for_resolution_latitude_and_clamps() {
+        // At latitude, ground resolution is finer by cos(lat): a given
+        // target resolution needs a LOWER zoom than at the equator
+        let z_eq = zoom_for_resolution(200.0, 0.0);
+        let z_pole = zoom_for_resolution(200.0, 80.0);
+        assert!(z_pole <= z_eq);
+        // Clamped to the valid range
+        assert_eq!(zoom_for_resolution(f64::MAX, 0.0), 0);
+        // The 1 m/px floor inside the function bounds the finest request
+        // (log2(156543) = 17.25 -> 17; finer targets cannot exceed it)
+        assert_eq!(zoom_for_resolution(0.001, 0.0), 17);
+        assert!(zoom_for_resolution(-5.0, 0.0) <= 18); // degenerate input stays finite
+    }
+
     fn test_prune_targets_75_percent() {
         // Pin the budget: 512 MB cap, prune to 75%
         assert_eq!(DISK_CACHE_MAX_BYTES, 512 * 1024 * 1024);

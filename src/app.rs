@@ -7404,8 +7404,199 @@ impl App {
         });
     }
 
+    /// Draw the map-tile ground plane at z=0 for the 3D intercept view.
+    ///
+    /// Reuses the 2D map's TileCache (disk persistence + parent fallback
+    /// included). Tiles are drawn as textured quads projected through the
+    /// isometric camera; a radial alpha fade toward the plane edges
+    /// blends the imagery into the space background. Missing tiles are
+    /// collected for asynchronous requesting (the plane renders what it
+    /// has — no blank boxes, no request storms).
+    ///
+    /// Returns the list of tile coords to request (caller drains it via
+    /// tile_cache.get_tile, which issues the actual loads).
+    fn draw_intercept_ground_tiles(
+        &self,
+        painter: &egui::Painter,
+        unit_pos: GeoCoord,
+        view_radius_km: f64,
+        proj: &dyn Fn(f64, f64, f64) -> egui::Pos2,
+    ) -> Vec<crate::map::TileCoord> {
+        // Guard: absurd geometry (no view) draws nothing
+        if !view_radius_km.is_finite() || view_radius_km <= 0.0 {
+            return Vec::new();
+        }
+
+        // Effective ground resolution: the view radius spans ~70% of the
+        // smaller screen dimension; a tile spans 256 px natively. Solve
+        // for meters/pixel at the equator-equivalent scale (the plane is
+        // local-km, so latitude distortion is already handled by the
+        // local-frame conversion).
+        let screen_hint = painter
+            .clip_rect()
+            .width()
+            .min(painter.clip_rect().height()) as f64;
+        let screen_px = screen_hint.max(200.0) * 0.7;
+        let meters_per_pixel = view_radius_km * 1000.0 / screen_px;
+        let zoom = crate::map::zoom_for_resolution(meters_per_pixel, unit_pos.lat);
+
+        // Geo bounds of the drawn area (square in local km ~= square in
+        // degrees scaled by cos(lat) for longitude)
+        let lat_span_deg = (view_radius_km / 111.32).min(80.0);
+        let lon_span_deg = lat_span_deg / unit_pos.lat.to_radians().cos().max(0.01);
+        let lat_min = unit_pos.lat - lat_span_deg;
+        let lat_max = unit_pos.lat + lat_span_deg;
+        let lon_min = unit_pos.lon - lon_span_deg;
+        let lon_max = unit_pos.lon + lon_span_deg;
+
+        // Tile range covering the bounds (Web Mercator x/y from geo)
+        let n = 2u64.pow(zoom);
+        let tile_x = |lon: f64| (((lon + 180.0) / 360.0) * n as f64).floor() as i64;
+        let tile_y = |lat: f64| {
+            let lat_rad = lat.to_radians();
+            let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0;
+            (y * n as f64).floor() as i64
+        };
+        let x_min = tile_x(lon_min).max(0);
+        let x_max = tile_x(lon_max).min(n as i64 - 1);
+        // Web Mercator y grows DOWNWARD (north = small y): lat_max -> min y
+        let y_min = tile_y(lat_max).max(0);
+        let y_max = tile_y(lat_min).min(n as i64 - 1);
+
+        // Cap the tile count (view radius should keep this small, but a
+        // degenerate zoom choice must not flood the network)
+        let mut to_request: Vec<crate::map::TileCoord> = Vec::new();
+        let tile_count = (x_max - x_min + 1) * (y_max - y_min + 1);
+        if tile_count <= 0 || tile_count > 64 {
+            return to_request;
+        }
+
+        // Local-km helpers: tile corner geo -> local coordinates relative
+        // to the unit (East/North km)
+        let local_of = |geo: GeoCoord| -> (f64, f64) {
+            let dx = (geo.lon - unit_pos.lon) * 111.32 * unit_pos.lat.to_radians().cos();
+            let dy = (geo.lat - unit_pos.lat) * 111.32;
+            (dx, dy)
+        };
+        let tile_geo = |x: i64, y: i64| -> GeoCoord {
+            let lon = x as f64 / n as f64 * 360.0 - 180.0;
+            let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n as f64))
+                .sinh()
+                .atan();
+            GeoCoord::new(lat_rad.to_degrees(), lon)
+        };
+
+        // Alpha fade: full opacity inside 75% of the radius, fading to 0
+        // at the edge — imagery dissolves into the background
+        let alpha_at = |local: (f64, f64)| -> f32 {
+            let r = (local.0 * local.0 + local.1 * local.1).sqrt();
+            let frac = (r / view_radius_km) as f32;
+            let fade_start = 0.6;
+            if frac <= fade_start {
+                1.0
+            } else {
+                (1.0 - (frac - fade_start) / (1.0 - fade_start)).clamp(0.0, 1.0)
+            }
+        };
+
+        for x in x_min..=x_max {
+            for y in y_min..=y_max {
+                let coord = crate::map::TileCoord {
+                    x: x as u32,
+                    y: y as u32,
+                    z: zoom,
+                };
+
+                // Tile corners in local km
+                let tl_geo = tile_geo(x, y);
+                let br_geo = tile_geo(x + 1, y + 1);
+                let (x0, y1) = local_of(tl_geo); // tl: north-west corner
+                let (x1, y0) = local_of(br_geo); // br: south-east corner
+                if x1 <= x0 {
+                    continue; // degenerate (extreme latitude wrap)
+                }
+
+                // Screen positions of the quad corners at z=0
+                let p_tl = proj(x0, y1, 0.0);
+                let p_tr = proj(x1, y1, 0.0);
+                let p_br = proj(x1, y0, 0.0);
+                let p_bl = proj(x0, y0, 0.0);
+
+                // Cull fully off-screen quads
+                let clip = painter.clip_rect();
+                let quad_min_x = p_tl.x.min(p_tr.x).min(p_br.x).min(p_bl.x);
+                let quad_max_x = p_tl.x.max(p_tr.x).max(p_br.x).max(p_bl.x);
+                let quad_min_y = p_tl.y.min(p_tr.y).min(p_br.y).min(p_bl.y);
+                let quad_max_y = p_tl.y.max(p_tr.y).max(p_br.y).max(p_bl.y);
+                if quad_max_x < clip.left()
+                    || quad_min_x > clip.right()
+                    || quad_max_y < clip.top()
+                    || quad_min_y > clip.bottom()
+                {
+                    continue;
+                }
+
+                match self.tile_cache.peek_loaded_with_fallback(&coord, 3) {
+                    Some((texture, uv)) => {
+                        // Per-vertex alpha from the fade at each corner
+                        let a_tl = (alpha_at((x0, y1)) * 230.0) as u8;
+                        let a_tr = (alpha_at((x1, y1)) * 230.0) as u8;
+                        let a_br = (alpha_at((x1, y0)) * 230.0) as u8;
+                        let a_bl = (alpha_at((x0, y0)) * 230.0) as u8;
+                        if a_tl == 0 && a_tr == 0 && a_br == 0 && a_bl == 0 {
+                            continue;
+                        }
+
+                        let mut mesh = egui::Mesh {
+                            texture_id: texture.id(),
+                            ..Default::default()
+                        };
+                        let v = egui::epaint::Vertex {
+                            pos: p_tl,
+                            uv: egui::pos2(uv.left(), uv.top()),
+                            color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, a_tl),
+                        };
+                        mesh.vertices.push(v);
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: p_tr,
+                            uv: egui::pos2(uv.right(), uv.top()),
+                            color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, a_tr),
+                        });
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: p_br,
+                            uv: egui::pos2(uv.right(), uv.bottom()),
+                            color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, a_br),
+                        });
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: p_bl,
+                            uv: egui::pos2(uv.left(), uv.bottom()),
+                            color: egui::Color32::from_rgba_unmultiplied(255, 255, 255, a_bl),
+                        });
+                        // Two triangles: (tl, tr, br) and (tl, br, bl)
+                        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                        painter.add(egui::Shape::mesh(mesh));
+                    }
+                    None => {
+                        // Not cached yet: request it (get_tile issues the
+                        // load asynchronously); it will appear next frame
+                        to_request.push(coord);
+                    }
+                }
+            }
+        }
+
+        to_request
+    }
+
     fn render_intercept_3d_fullscreen(&mut self, ui: &mut egui::Ui) {
         let available_rect = ui.available_rect_before_wrap();
+
+        // Process any pending tile loads (the ground plane consumes the
+        // same cache as the 2D map; without this, tiles requested in this
+        // view would never finish loading until the view is switched)
+        if self.tile_cache.process_pending(ui.ctx()) {
+            ui.ctx().request_repaint();
+        }
 
         // Allocate the entire space for the 3D view
         let (response, painter) =
@@ -7558,6 +7749,26 @@ impl App {
         let proj = |x: f64, y: f64, z: f64| -> egui::Pos2 {
             self.isometric_state.project(x, y, z, center, scale)
         };
+
+        // Map-tile ground plane at z=0 (drawn before the grid so the grid
+        // and geometry render on top of the imagery). Missing tiles are
+        // requested through the normal cache (disk + fallback included);
+        // the plane shows whatever is already cached and fills in as the
+        // loads arrive. The isometric camera compresses distance toward
+        // the horizon, so the plane radius exceeds the grid extent a
+        // little for good coverage at low elevation angles.
+        {
+            let plane_radius = max_dist * 1.05;
+            let to_request =
+                self.draw_intercept_ground_tiles(&painter, unit_pos, plane_radius, &proj);
+            if !to_request.is_empty() {
+                // Issue loads for missing tiles (async; next frames draw
+                // them via the cache path above)
+                for coord in to_request {
+                    self.tile_cache.get_tile(coord);
+                }
+            }
+        }
 
         // Draw ground plane grid
         let grid_color = egui::Color32::from_rgba_unmultiplied(60, 70, 90, 60);
