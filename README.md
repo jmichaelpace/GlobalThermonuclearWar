@@ -37,6 +37,7 @@ A ballistic missile defense simulation built with Rust and egui. Visualize missi
   - **True Track**: Shows actual missile positions (omniscient view)
   - **Detected Track**: Shows sensor-perceived positions with uncertainty visualization
 - **Camera Follow**: `F` key or Follow button locks the camera onto any selected entity (smoothed pan, per-entity auto-zoom); dragging or zooming releases
+- **Smooth Map Zooming**: Missing tiles render their covering parent tile (upscaled) while loading — no blank rectangles — with a persistent disk cache for instant repeat sessions (see Map Tile Caching)
 - **Operator Display Smoothing**: Detected symbols, their headings, and uncertainty ellipses are display-eased to remove measurement-noise jitter (toggle: Smooth; display-only — fire control uses raw track data)
 - **Track Quality Visualization**: Quality-colored rings and info badges around detected tracks (toggle: Quality)
 - **Battery Status HUD**: Per-unit interceptor inventories, engagement counts, and depletion warnings (toggle: Batteries)
@@ -446,6 +447,16 @@ Tracks are gated by the same quality requirements fire control uses (quality ≥
 
 Combat events play sound effects from `assets/sounds/` (WAV/OGG, loaded at startup): missile/interceptor launch, intercept hit/miss, self-destruct, impact, decoy deployment, and the DEFCON escalation klaxon. Per-sound cooldowns prevent salvo stacking; a mute toggle sits in the top bar. The committed files are procedural placeholders (`generate_placeholders.py`) — drop in licensed recordings with the same names, no code changes needed. Missing files degrade to silence.
 
+### Map Tile Caching
+
+The 2D map (MapTiler tiles) uses a three-layer caching strategy for smooth zooming and near-zero repeat-session API usage:
+
+- **Parent-tile fallback**: while a tile at the current zoom level loads, the renderer draws the covering ancestor tile (up to 3 zoom levels up), scaled into the correct quadrant — the familiar slightly-blurry stand-in from web map apps, never a blank rectangle. The immediate parents of the visible area are prefetched in the background so a fallback always exists before you zoom.
+- **In-memory LRU**: 256 decoded tiles (all zoom levels), least-recently-used eviction.
+- **On-disk cache**: raw PNGs persisted to `~/Library/Caches/GlobalThermonuclearWar/tiles/{style}/{z}/{x}/{y}.png` (atomic writes; failed fetches are never cached; the API key never appears in any path). Disk is checked before the network, so previously viewed areas render instantly on restart — even offline. Capped at 512 MB with oldest-file pruning; each map style keeps its own directory.
+
+Failed fetches retry after 30 seconds instead of permanently blanking a tile (and show the parent fallback in the meantime).
+
 ## Requirements
 
 - Rust 1.70+ (Edition 2021)
@@ -516,6 +527,8 @@ The application uses MapTiler for map tiles. You'll need a free API key:
    Replace `your_api_key_here` with your actual MapTiler API key.
 
 > **Note:** The `.env` file is excluded from git via `.gitignore` to keep your API key private.
+
+> **API quota tip**: The app maintains a persistent on-disk tile cache (see [Map Tile Caching](#map-tile-caching)), so previously viewed areas cost ~zero API requests on repeat sessions — your free-tier 100,000 requests go a long way.
 
 ## Building
 
@@ -722,7 +735,7 @@ src/
 ├── view/                # Map projection abstractions
 │   └── mod.rs           # MapProjection trait, Mercator/Globe projections
 ├── map/                 # Geographic utilities
-│   ├── tiles.rs         # Map tile caching (MapTiler, NASA GIBS)
+│   ├── tiles.rs         # Map tile caching: multi-zoom fallback, disk persistence (MapTiler), NASA GIBS
 │   └── viewport.rs      # 2D viewport management
 ├── rendering/           # Rendering utilities
 │   ├── colors.rs        # Centralized color definitions by affiliation/mode
@@ -795,7 +808,7 @@ cargo test test_aegis_intercepts_mrbm_deterministic     # One test by name
 
 **Determinism**: engine tests must seed the detection RNG (`engine.detection.seed_rng(42);` right after `SimulationEngine::new()`) — detection rolls, false alarms, and measurement noise all draw from it. The suite covers impact-prediction accuracy/stability, deterministic Aegis-vs-MRBM interception, engagement-envelope enforcement (THAAD refuses ICBM apogees), launch-maturity gating, shoot-look-shoot doctrine, sensor bias/noise behavior, decoy discrimination, DEFCON escalation, WGS-84 geodesy, Coriolis compensation, Pk realism bounds, and TOML scenario round-trips on every scenario file. One known failure: `test_ekf_convergence` fails at HEAD (uncertainty diverges instead of converging — a pre-existing filter-tuning issue, unrelated to any current feature).
 
-Unit tests also live inline (`#[cfg(test)]`): scenario builder draft/validation logic in `src/scenario/builder.rs`, WGS-84 geodesy + Coriolis in `src/simulation/physics.rs`, DEFCON assessment in `src/simulation/alert.rs`, clutter physics in `src/simulation/detection.rs`, event/BDA recording in `src/tracking/mod.rs`, and sound mapping in `src/audio/mod.rs`.
+Unit tests also live inline (`#[cfg(test)]`): scenario builder draft/validation logic in `src/scenario/builder.rs`, WGS-84 geodesy + Coriolis in `src/simulation/physics.rs`, DEFCON assessment in `src/simulation/alert.rs`, clutter physics in `src/simulation/detection.rs`, event/BDA recording in `src/tracking/mod.rs`, sound mapping in `src/audio/mod.rs`, and tile-caching fallback math + disk round-trips in `src/map/tiles.rs`.
 
 ## Documentation
 
