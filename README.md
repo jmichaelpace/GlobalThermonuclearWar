@@ -2,6 +2,8 @@
 
 A ballistic missile defense simulation built with Rust and egui. Visualize missile launches, tracking, and intercept scenarios with realistic flight physics and defense system modeling.
 
+![Global Thermonuclear War simulation](screenshot_02.png)
+
 ## Purpose
 
 This application was created as an exercise to explore the complex problem of ballistic missile defense — and, more importantly, to better appreciate the complexity of the issue. Modeling realistic trajectories, sensor limitations, engagement doctrine, and multi-layer defense makes it clear that even optimistically-modeled defenses catch only some warheads, at enormous cost, and with little room for error. The goal is not to suggest answers but to understand why the problem remains hard.
