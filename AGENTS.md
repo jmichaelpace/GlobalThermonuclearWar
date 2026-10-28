@@ -13,8 +13,9 @@ Ballistic missile defense simulation in Rust + egui, targeting macOS Apple Silic
 - `cargo check` - quick compile check
 
 ## Testing Gotchas
-- Running tests: `tests/track_prediction_test.rs` (3 tests), `tests/impact_prediction_test.rs` (2 tests), `tests/interceptor_engagement_test.rs` (4 tests), `tests/scenario_builder_test.rs` (5 tests: TOML round-trip on all scenarios, Option-field handling, draft→engine chain, import flow) — plus `#[cfg(test)]` unit tests in `src/scenario/builder.rs` (7 tests, run in both lib and bin targets).
+- Running tests: `tests/track_prediction_test.rs` (3 tests), `tests/impact_prediction_test.rs` (2 tests), `tests/interceptor_engagement_test.rs` (6 tests, incl. post-miss command-destruct and no-chase-launch doctrine), `tests/scenario_builder_test.rs` (5 tests: TOML round-trip on all scenarios, Option-field handling, draft→engine chain, import flow), `tests/scenario_wiring_test.rs` (4 tests: every scenario's radars must resolve real `config/sensors/` configs, every missile must resolve a real `config/missiles/` profile — a silent Generic fallback fails this — and every scenario passes builder validation). Unit tests: `src/scenario/builder.rs` (9 tests) and `src/simulation/entities.rs` (5 CPA-hysteresis tests), run in both lib and bin targets; `src/ui/scenario_builder.rs` (5 tests, bin target only). Expected totals: lib 14, bin 19.
 - `src/tests/` (impact_test.rs, trajectory_test.rs) is **orphaned** — declared in no module, never compiled. Edits there have no effect; put new tests in `tests/` or `#[cfg(test)]` modules.
+- Adding a scenario? `scenario_wiring_test.rs` fails the build if a radar falls back to the Generic Radar or a missile falls back to the Generic Ballistic Missile — wire `sensor_config` explicitly (see `scenarios/README.md`).
 - `test_ekf_convergence` **fails at HEAD** (uncertainty diverges instead of converging). Don't assume your change broke it — verify with `git stash` before chasing it.
 - `test_fire_control.sh` / `test_salvo_fire.sh` are manual smoke scripts (launch GUI, grep logs; salvo script requires selecting the Middle East scenario by hand). Not CI tests.
 - To verify behavior changes end-to-end: run the app and select a `scenarios/test_*.toml` platform/sensor test scenario (see `scenarios/README.md`).
@@ -24,6 +25,8 @@ Ballistic missile defense simulation in Rust + egui, targeting macOS Apple Silic
 - Interceptor arrival-time math has a single source of truth: `InterceptorKinematics::time_to_cover_distance()` (boost-aware, drag-aware). Launch, guidance, and intercept-time recalcs all must call it — do not reintroduce ad-hoc `dist/max_velocity` estimates.
 - Interceptor drag is stateful/cumulative in `Interceptor::update_kinematics(dt)`; `distance_traveled_km` is the actual integrated path length.
 - CPA is tracked ONLY by the guidance-side hysteresis tracker (`passed_cpa`); `resolve_intercepts` consumes the flag, never re-derives it.
+- Post-miss command-destruct: an interceptor that passes its target mid-course (outside terminal phase) resolves as `SelfDestruct` promptly instead of flying to its flight-time timeout (FTS doctrine); the miss feeds SLS follow-up. Don't "fix" miss-resolved interceptors to keep homing.
+- Synchronized-arrival doctrine: fire control refuses launch solutions where the interceptor arrives far earlier than the target (chase geometry, no kill window), and in-flight guidance breaks off (destructs) when no synchronized solution remains. No chase shots at receding targets.
 - `SimulationEngine.max_shots_per_target` (default 4) caps total shots per target; `salvo_size` is per-salvo only. Crossing-geometry targets legitimately miss (gimbal-limited terminal homing) — that's realistic, not a bug.
 
 ## Architecture
@@ -55,7 +58,7 @@ Ballistic missile defense simulation in Rust + egui, targeting macOS Apple Silic
 
 ## Realism Requirements
 - Real-world physics constants (9.80665 m/s² gravity); never simplify physics for performance unless asked.
-- Defense uses only sensor-detected data, not ground truth: track establishment requires 3+ measurements, quality ≥ 0.4, freshness < 5s. Undetected = unengaged.
+- Defense uses only sensor-detected data, not ground truth. Engagement gate (`calculate_intercept_solution_from_track`, engine.rs): track quality ≥ 0.6, staleness ≤ 5s, ≥ 10 measurements, velocity confidence ≥ 0.55; the converged-trajectory estimate itself needs ≥ 3 measurements (`get_converged_trajectory`, detection.rs). Undetected = unengaged.
 - Engagement envelopes strictly enforced (e.g., THAAD cannot engage ICBM apogees above its 150km ceiling).
 - Defense capabilities must match real-world published data; cite the real-world basis for models/formulas in comments.
 
