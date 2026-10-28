@@ -2,6 +2,56 @@
 
 A ballistic missile defense simulation built with Rust and egui. Visualize missile launches, tracking, and intercept scenarios with realistic flight physics and defense system modeling.
 
+## Disclaimer
+
+All information about the equipment represented in this application — radar detection ranges, interceptor and missile performance specs, sensor capabilities, and related parameters — was gathered from **publicly available sources** (e.g., manufacturer publications, government statements, open defense research such as CSIS Missile Threat, and encyclopedic references). These figures are cited in this spirit in the configuration files under `config/`.
+
+The data reflects unclassified estimates and descriptions. It may be incomplete, outdated, or inexact, and does **not** represent actual, verified, or classified operational capabilities of any system. This application is intended for simulation and educational purposes only.
+
+## Table of Contents
+
+- [Table of Contents](#table-of-contents)
+- [Disclaimer](#disclaimer)
+- [Features](#features)
+  - [Visualization Features](#visualization-features)
+- [Realism Features](#realism-features)
+  - [Key Realism Highlights](#key-realism-highlights)
+  - [Sensor & Detection](#sensor--detection)
+  - [Track Fusion & Uncertainty](#track-fusion--uncertainty)
+  - [Converged Trajectory Estimation](#converged-trajectory-estimation)
+  - [Radar Frequency Bands & Detection Quality](#radar-frequency-bands--detection-quality)
+  - [Ballistic Physics](#ballistic-physics)
+  - [Intercept Calculations](#intercept-calculations)
+  - [Terminal Guidance](#terminal-guidance)
+  - [Divert & Energy Management](#divert--energy-management)
+  - [Debris & Fratricide](#debris--fratricide)
+  - [Mid-Course Guidance](#mid-course-guidance)
+  - [Continuous Probability of Kill (Pk) Evaluation](#continuous-probability-of-kill-pk-evaluation)
+  - [Defense System Capabilities](#defense-system-capabilities)
+  - [Engagement Doctrine](#engagement-doctrine)
+  - [Countermeasures & Deception](#countermeasures--deception)
+- [Requirements](#requirements)
+- [Installation](#installation)
+  - [Install Rust](#install-rust)
+  - [Clone the Repository](#clone-the-repository)
+  - [Install Project Dependencies](#install-project-dependencies)
+  - [Configure MapTiler API Key](#configure-maptiler-api-key)
+- [Building](#building)
+- [Running](#running)
+- [Configuration](#configuration)
+  - [Scenario Files](#scenario-files)
+  - [System Configuration](#system-configuration)
+  - [Example: Missile Configuration](#example-missile-configuration)
+  - [Example: Sensor Configuration](#example-sensor-configuration)
+- [Architecture](#architecture)
+  - [Key Design Patterns](#key-design-patterns)
+- [Development](#development)
+  - [Code Style](#code-style)
+  - [Testing](#testing)
+- [Documentation](#documentation)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
 ## Features
 
 - **Realistic Missile Simulation**: ICBM, IRBM, MRBM, SLBM, and SRBM with configurable trajectories, flight times, and countermeasures
@@ -357,7 +407,7 @@ Pk = base_pk × aspect_factor × track_quality_factor × closure_factor
 - GBI: ~2000km, midcourse intercept, 200-2000km altitude
 - Iron Dome: ~70km, short-range rockets, 0.5-10km altitude
 - Arrow 3: ~400km, exo-atmospheric, 20-400km altitude
-- S-400: ~400km, multi-layer, 0.01-400km altitude
+- S-400: 60km vs ballistic targets (400km vs air), 0.01-30km altitude
 
 **Realistic Engagement Envelopes**:
 - **SRBMs** (Short-Range, <1000km): Apogee ~80-100km → THAAD, Patriot can engage
