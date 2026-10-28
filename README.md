@@ -2,6 +2,10 @@
 
 A ballistic missile defense simulation built with Rust and egui. Visualize missile launches, tracking, and intercept scenarios with realistic flight physics and defense system modeling.
 
+## Purpose
+
+This application was created as an exercise to explore the complex problem of ballistic missile defense — and, more importantly, to better appreciate the complexity of the issue. Modeling realistic trajectories, sensor limitations, engagement doctrine, and multi-layer defense makes it clear that even optimistically-modeled defenses catch only some warheads, at enormous cost, and with little room for error. The goal is not to suggest answers but to understand why the problem remains hard.
+
 ## Disclaimer
 
 All information about the equipment represented in this application — radar detection ranges, interceptor and missile performance specs, sensor capabilities, and related parameters — was gathered from **publicly available sources** (e.g., manufacturer publications, government statements, open defense research such as CSIS Missile Threat, and encyclopedic references). These figures are cited in this spirit in the configuration files under `config/`.
@@ -11,6 +15,7 @@ The data reflects unclassified estimates and descriptions. It may be incomplete,
 ## Table of Contents
 
 - [Table of Contents](#table-of-contents)
+- [Purpose](#purpose)
 - [Disclaimer](#disclaimer)
 - [Features](#features)
   - [Visualization Features](#visualization-features)
