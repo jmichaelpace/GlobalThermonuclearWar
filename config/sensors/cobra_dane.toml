@@ -12,7 +12,9 @@ country = "USA"
 # Maximum detection range for targets (km) - nominal range, actual max is 1.5x this
 detection_range_km = 3000.0
 # Horizontal field of view (degrees) - how wide the radar can scan
-azimuth_coverage_deg = 120.0
+# Single radar face per the MDA Cobra Dane fact sheet (136° azimuth coverage).
+# https://en.wikipedia.org/wiki/Cobra_Dane
+azimuth_coverage_deg = 136.0
 # Minimum elevation angle radar can scan (degrees above horizon)
 elevation_min_deg = 3.0
 # Maximum elevation angle radar can scan (degrees, 90 = straight up)

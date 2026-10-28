@@ -19,7 +19,7 @@ Apogee values below are computed from the missile config:
 | `test_iron_dome.toml` | Iron Dome + EL/M-2084 | 0-10 km alt, 70 km range, 0.7 km/s | Grad x3 (7.6-9.3 km apogee, south Lebanon geometry) | Rocket-class intercepts, rapid engagement |
 | `test_arrow3.toml` | Arrow 3 + Green Pine | 100-1000 km alt (exo), 2,400 km flyout, ~3.0 km/s | Shahab-3 x2, RS-26 Rubezh (439-695 km apogee) | Exo-atmospheric intercepts at apogee/midcourse |
 | `test_davids_sling.toml` | David's Sling + EL/M-2084 | 2-15 km alt, 300 km range, 2.55 km/s | Iskander-M x2, Shahab-3 (72-265 km apogee) | Terminal-window engagement (tiny window vs MRBM — misses expected) |
-| `test_s400.toml` | S-400 + Big Bird/Grave Stone | 40N6: 0.01-30 km alt, 400 km range, 2.1 km/s | Iskander-M, Shahab-3, Sejjil, RS-26 Rubezh | Terminal-only vs SRBM; high-altitude refusals expected (40N6 is a SAM, not a midcourse BMD interceptor) |
+| `test_s400.toml` | S-400 + Big Bird/Grave Stone | 40N6: 0.01-30 km alt, 60 km vs TBMs, 1.19 km/s | Iskander-M, Shahab-3, Sejjil, RS-26 Rubezh | Terminal-only vs SRBM inside the published 60 km ABM radius; high-altitude refusals expected (40N6 is a SAM, not a midcourse BMD interceptor) |
 | `test_aegis_geometry.toml` | AEGIS + SPY-1D | 100-600 km alt (exo) | Shahab-3 x3 (#HEAD-ON / #CROSSING / #OBLIQUE) | Guidance geometry: head-on/crossing/oblique PIP lead; time-synchronized launch windows (no chase shots on receding targets) |
 
 ## Sensor Tests (Radar Only - No Interceptors)
@@ -27,7 +27,7 @@ Apogee values below are computed from the missile config:
 | Scenario | Sensor Config | Nominal Range | Max (1.5×) | Azimuth | Band | Threats | Purpose |
 |----------|---------------|---------------|------------|---------|------|---------|---------|
 | `test_sensor_sbx.toml` | SBX-1 | 4000 km | 6000 km | 25° ("soda straw") | X | RS-26 Rubezh, Hwasong-15 x2 | Narrow-arc discrimination, cued by PAVE PAWS; off-beam arc stays undetected by SBX |
-| `test_sensor_cobra_dane.toml` | Cobra Dane | 3000 km | 4500 km | 120° (facing 240°) | L | Hwasong-15 x5 | Early warning, NK launch-region coverage |
+| `test_sensor_cobra_dane.toml` | Cobra Dane | 3000 km | 4500 km | 136° (facing 240°) | L | Hwasong-15 x5 | Early warning, NK launch-region coverage |
 | `test_sensor_tpy2.toml` | AN/TPY-2 | 1000 km | 1500 km | 120° (facing 180°) | X | Iskander-M, Shahab-3, RS-26 Rubezh, Hwasong-15 x2 | Forward-based mode, range ladder incl. azimuth/range-gated non-detections |
 | `test_sensor_spy1.toml` | AN/SPY-1D | 500 km | 750 km | 360° | S | Iskander-M, Shahab-3 x2, RS-26 Rubezh x2 | Volume search, range ladder past nominal |
 | `test_sensor_fylingdales.toml` | Fylingdales | 3000 km | 4500 km | 360° | L (UHF stand-in) | RS-26 Rubezh x2, Hwasong-15 x3 | European early warning, east-axis ladder |
@@ -82,7 +82,7 @@ Apogee values below are computed from the missile config:
 - **GBI**: Hwasong-15 midcourse at 1,500+ km altitude
 - **Iron Dome**: Grad rockets at 7-9 km apogee — the only rocket-class test that actually works
 - **David's Sling**: Tiny terminal windows vs 72-265 km apogees — misses/refusals expected vs the MRBM
-- **S-400**: Iskander terminal engagement; Shahab-3/Sejjil/RS-26 refused above 30 km (realistic SAM limits)
+- **S-400**: Iskander terminal engagement inside the 60 km published ABM radius; Shahab-3/Sejjil/RS-26 refused above 30 km (realistic SAM limits)
 - **AEGIS geometry**: HEAD-ON engages; CROSSING engages while the missile is still approaching (near-head-on PIP) and is NOT chased after it passes — fire control only launches inside time-synchronized windows (see `docs/platform-intercept-geometry.md`); OBLIQUE partial-lead
 
 ### Sensor Tests:

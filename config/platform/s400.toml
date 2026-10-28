@@ -16,7 +16,12 @@ reload_time_minutes = 90.0
 # Maximum number of interceptors that can be launched in one salvo
 max_salvo_size = 2
 # Maximum range at which interceptors can be launched (km)
-engagement_range_km = 400.0
+# Published system specs give 250-400 km range AERODYNAMIC targets, but only
+# 60 km against tactical ballistic targets (CSIS: "250-400 km, 60 km (ABM)";
+# Wikipedia: "range against tactical ballistic targets: max 60"). Every
+# simulated target is ballistic, so the ABM figure governs.
+# https://missilethreat.csis.org/defsys/s-400-triumf/
+engagement_range_km = 60.0
 
 # Multi-sensor configuration
 [[launcher.sensors]]
@@ -29,4 +34,4 @@ azimuth_center_deg = 0.0
 config_name = "92N6E Grave Stone"
 role = "fire_control"
 azimuth_center_deg = 0.0
-# Uses 120° coverage from sensor config
+# Uses 90° coverage from sensor config

@@ -762,11 +762,13 @@ impl InterceptorKinematics {
             // S-400 40N6 missile
             DefenseType::S400 => Self {
                 boost_duration_sec: 15.0,
-                boost_acceleration_g: 18.0,
-                // 2.1 km/s per config/interceptors/40n6.toml (published data)
-                max_velocity_km_s: 2.1,
+                boost_acceleration_g: 8.0,
+                // 1.19 km/s - published 40N6E maximum velocity (1,190 m/s,
+                // Mach 3.5); must stay in sync with config/interceptors/40n6.toml
+                // https://en.wikipedia.org/wiki/S-400_missile_system
+                max_velocity_km_s: 1.19,
                 terminal_maneuver_g: 25.0,
-                burnout_altitude_km: 30.0,
+                burnout_altitude_km: 12.0,
             },
             // Iron Dome Tamir - small, fast boost
             DefenseType::IronDome => Self {

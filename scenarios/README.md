@@ -133,7 +133,7 @@ Simplified scenarios for isolated platform testing. Each contains a single defen
 - **`test_iron_dome.toml`** - Iron Dome Battery vs Grad rockets (0-10km, south Lebanon geometry)
 - **`test_arrow3.toml`** - Arrow 3 Battery vs Shahab-3/RS-26 Rubezh (exo-atmospheric, 100-1000km envelope)
 - **`test_davids_sling.toml`** - David's Sling Battery vs Iskander-M/Shahab-3 (terminal window)
-- **`test_s400.toml`** - S-400 Battery vs multi-layer threats (40N6 is 0.01-30km - high-altitude refusals expected)
+- **`test_s400.toml`** - S-400 Battery vs multi-layer threats (40N6 is 0.01-30km, 60 km vs TBMs - high-altitude and range refusals expected)
 - **`test_aegis_geometry.toml`** - AEGIS vs head-on/crossing/oblique geometries
 
 **Use platform test scenarios to:**
@@ -146,7 +146,7 @@ Simplified scenarios for isolated platform testing. Each contains a single defen
 Radar-only scenarios for testing detection, tracking, and track quality without interceptors. Each contains a single radar (explicitly wired via `sensor_config`, aimed via `facing_deg` where its cone is < 360°) with missiles at various ranges to test the detection envelope:
 
 - **`test_sensor_sbx.toml`** - Sea-Based X-band (4000km, X-band, 25° "soda straw" arc, cued midcourse discrimination)
-- **`test_sensor_cobra_dane.toml`** - Cobra Dane, Shemya Island (3000km, L-band, 120° cone aimed at NK)
+- **`test_sensor_cobra_dane.toml`** - Cobra Dane, Shemya Island (3000km, L-band, 136° cone aimed at NK)
 - **`test_sensor_tpy2.toml`** - AN/TPY-2 THAAD radar (1000km, X-band, 120° cone, forward-based mode)
 - **`test_sensor_spy1.toml`** - AN/SPY-1 AEGIS radar (500km, S-band, 360°, volume search)
 - **`test_sensor_fylingdales.toml`** - Fylingdales BMEWS, UK (3000km, L-band/UHF stand-in, 360°)

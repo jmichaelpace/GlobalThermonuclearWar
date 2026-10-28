@@ -22,15 +22,23 @@ max_engagement_altitude_km = 30.0 # https://tass.com/defense/1026630
 # Duration of powered boost phase (seconds)
 boost_duration_sec = 15.0
 # Acceleration during boost phase (g-forces, 1g = 9.81 m/s²)
-boost_acceleration_g = 18.0
+# ~8g x 15s ≈ 1.18 km/s - consistent with the published maximum velocity below.
+boost_acceleration_g = 8.0
 # Maximum velocity achieved by interceptor (km/s)
-max_velocity_km_s = 2.1 # https://en.wikipedia.org/wiki/S-400_missile_system
+# Published 40N6E spec: maximum velocity 1,190 m/s (Mach 3.5)
+# https://en.wikipedia.org/wiki/S-400_missile_system (missile spec table);
+# TASS test reports cite the same 1,190 m/s figure.
+max_velocity_km_s = 1.19
 # Maximum g-force for terminal maneuvering to hit target (g-forces)
 terminal_maneuver_g = 25.0 # https://weaponsystems.net/system/1417-%3E%3E48N6#:~:text=The%20S%2D300PM%2D2%20introduced%20the%2048N6D%20missile%20with,export%20uses%20the%2048N6E2%20missile.%20S%2D400%20Triumf.
 # Altitude at which boost phase ends and coast begins (km)
-burnout_altitude_km = 30.0
+# At ~1.19 km/s after a 15 s boost the vehicle is well below 30 km.
+burnout_altitude_km = 12.0
 # Average speed over entire flight (km/s) - used for quick time estimates
-average_speed_km_s = 1.190 # https://tass.com/defense/1026630
+# DOCUMENTATION ONLY: the engine derives flight from the boost-physics model
+# (InterceptorKinematics in src/simulation/entities.rs), not this field.
+# The published 1,190 m/s figure is the missile's MAXIMUM velocity.
+average_speed_km_s = 1.190
 
 # Engagement effectiveness parameters
 [engagement]
